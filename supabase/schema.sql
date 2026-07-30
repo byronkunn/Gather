@@ -1,6 +1,6 @@
 -- ============================================================
--- Twitter Clone — Supabase schema
--- Run this whole file in: Supabase Dashboard -> SQL Editor
+-- Gather local Supabase schema
+-- Applied by `supabase db reset` through supabase/config.toml.
 -- ============================================================
 
 -- ---------- TABLES ----------
@@ -187,6 +187,20 @@ alter table public.follows enable row level security;
 alter table public.notifications enable row level security;
 alter table public.messages enable row level security;
 
+-- ---------- API GRANTS ----------
+
+grant usage on schema public to anon, authenticated;
+
+grant select on public.profiles, public.tweets, public.likes, public.retweets, public.follows
+  to anon, authenticated;
+grant update on public.profiles to authenticated;
+grant insert, delete on public.tweets, public.likes, public.retweets, public.follows
+  to authenticated;
+grant select, insert, delete on public.bookmarks to authenticated;
+grant select, update on public.notifications to authenticated;
+grant select, insert, update on public.messages to authenticated;
+grant execute on function public.get_trends() to anon, authenticated;
+
 -- profiles: public read, owner update
 create policy "profiles are viewable by everyone" on public.profiles for select using (true);
 create policy "users update own profile" on public.profiles for update using (auth.uid() = id);
@@ -231,15 +245,3 @@ create policy "recipient marks read" on public.messages
 alter publication supabase_realtime add table public.messages;
 alter publication supabase_realtime add table public.notifications;
 
--- ---------- STORAGE ----------
--- Public bucket for avatars, covers, and tweet images
-insert into storage.buckets (id, name, public) values ('media', 'media', true);
-
-create policy "media publicly readable" on storage.objects
-  for select using (bucket_id = 'media');
-create policy "authed users upload media" on storage.objects
-  for insert with check (bucket_id = 'media' and auth.role() = 'authenticated');
-create policy "users update own media" on storage.objects
-  for update using (bucket_id = 'media' and auth.uid() = owner);
-create policy "users delete own media" on storage.objects
-  for delete using (bucket_id = 'media' and auth.uid() = owner);

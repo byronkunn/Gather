@@ -43,6 +43,7 @@ function AppRoutes() {
         <Route path="/messages" element={<MessagesPage />} />
         <Route path="/bookmarks" element={<BookmarksPage />} />
         <Route path="/tweet/:id" element={<TweetDetail />} />
+        <Route path="/auth" element={<Navigate to="/home" replace />} />
         <Route path="/:username" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Route>

@@ -21,7 +21,8 @@ export function AuthProvider({ children }) {
         setProfile(data)
         return
       }
-      const { data } = await supabase.from('profiles').select('*').eq('id', userId).single()
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single()
+      if (error) throw error
       setProfile(data)
     } catch {
       // Fallback profile if Supabase profile not found
@@ -40,13 +41,15 @@ export function AuthProvider({ children }) {
       return
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      if (error) throw error
       setSession(session)
       if (session) loadProfile(session.user.id).finally(() => setLoading(false))
       else setLoading(false)
     }).catch(() => {
-      setSession({ user: MOCK_USER })
-      loadProfile('demo-user-id').finally(() => setLoading(false))
+      setSession(null)
+      setProfile(null)
+      setLoading(false)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -70,12 +73,13 @@ export function AuthProvider({ children }) {
       })
       return
     }
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { username, display_name: displayName } },
     })
     if (error) throw error
+    return data
   }
 
   const signIn = async (email, password) => {
@@ -85,13 +89,15 @@ export function AuthProvider({ children }) {
       loadProfile('demo-user-id')
       return
     }
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
+    return data
   }
 
   const signOut = async () => {
     if (isConfigured) {
-      await supabase.auth.signOut()
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
     }
     setSession(null)
     setProfile(null)

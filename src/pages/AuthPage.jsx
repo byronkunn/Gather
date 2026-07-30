@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import Icon from '../components/Icons'
 
 export default function AuthPage() {
   const { signIn, signUp } = useAuth()
+  const navigate = useNavigate()
   const [mode, setMode] = useState('signin') // 'signin' | 'signup'
   const [form, setForm] = useState({ email: '', password: '', username: '', displayName: '' })
   const [busy, setBusy] = useState(false)
@@ -22,11 +24,16 @@ export default function AuthPage() {
         if (!/^\w{3,20}$/.test(form.username)) {
           throw new Error('Username must be 3–20 letters, numbers, or underscores.')
         }
-        await signUp(form.email, form.password, form.username.toLowerCase(), form.displayName || form.username)
-        setNotice('Account created! If email confirmation is enabled, check your inbox — otherwise you can sign in now.')
-        setMode('signin')
+        const data = await signUp(form.email, form.password, form.username.toLowerCase(), form.displayName || form.username)
+        if (data?.session) {
+          navigate('/home', { replace: true })
+        } else {
+          setNotice('Account created! Check your inbox to confirm your email, then sign in.')
+          setMode('signin')
+        }
       } else {
         await signIn(form.email, form.password)
+        navigate('/home', { replace: true })
       }
     } catch (err) {
       setError(err.message || 'Something went wrong')
