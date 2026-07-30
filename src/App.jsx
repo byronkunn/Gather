@@ -7,6 +7,7 @@ import Home from './pages/Home'
 import TweetDetail from './pages/TweetDetail'
 import AuthPage from './pages/AuthPage'
 import ExplorePage from './pages/ExplorePage'
+import TagPage from './pages/TagPage'
 import NotificationsPage from './pages/NotificationsPage'
 import MessagesPage from './pages/MessagesPage'
 import BookmarksPage from './pages/BookmarksPage'
@@ -41,6 +42,7 @@ function AppRoutes() {
         <Route path="/" element={<Navigate to="/home" replace />} />
         <Route path="/home" element={<Home />} />
         <Route path="/explore" element={<ExplorePage />} />
+        <Route path="/tags/:tagName" element={<TagPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/messages" element={<MessagesPage />} />
         <Route path="/bookmarks" element={<BookmarksPage />} />

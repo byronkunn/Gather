@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { fetchNotifications, markNotificationsRead } from '../lib/api'
+import { fetchNotificationSettings, fetchNotifications, markNotificationsRead, updateNotificationSettings } from '../lib/api'
 import { PageHeader, Spinner, EmptyState } from '../components/Shared'
 import Avatar from '../components/Avatar'
 import Icon from '../components/Icons'
@@ -15,6 +15,13 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('all')
   const [loadError, setLoadError] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settings, setSettings] = useState(null)
+
+  useEffect(() => {
+    if (!user) return
+    fetchNotificationSettings(user.id).then(setSettings).catch(() => {})
+  }, [user])
 
   useEffect(() => {
     if (!user) return
@@ -33,9 +40,29 @@ export default function NotificationsPage() {
       .catch(() => {})
   }, [user, refreshUnread])
 
+  const updateSetting = async (key, value) => {
+    const next = await updateNotificationSettings(user.id, { ...settings, [key]: value })
+    setSettings(next)
+  }
+
+  const visibleNotifications = notifications.filter((n) => {
+    if (!settings) return true
+    if (settings.verifiedOnly && !n.actor?.verified) return false
+    if (n.type === 'like') return settings.likes
+    if (n.type === 'retweet' || n.type === 'quote') return settings.reposts
+    if (n.type === 'follow') return settings.follows
+    if (n.type === 'reply') return settings.replies
+    if (n.type === 'mention') return settings.mentions
+    return true
+  })
+
   return (
     <div>
-      <PageHeader title="Notifications" />
+      <PageHeader title="Notifications">
+        <button className="icon-btn" aria-label="Notification settings" onClick={() => setSettingsOpen((open) => !open)}>
+          <Icon name="settings" size={18} />
+        </button>
+      </PageHeader>
       <div className="tabs">
         <button className={`tab ${tab === 'all' ? 'active' : ''}`} onClick={() => setTab('all')}>
           <span>All</span>
@@ -47,18 +74,36 @@ export default function NotificationsPage() {
           <span>Mentions</span>
         </button>
       </div>
+      {settingsOpen && settings && (
+        <div className="notification-settings-panel">
+          <div className="section-label">Notification filters</div>
+          {[
+            ['likes', 'Likes'],
+            ['reposts', 'Reposts and quotes'],
+            ['follows', 'Follows'],
+            ['replies', 'Replies'],
+            ['mentions', 'Mentions'],
+            ['verifiedOnly', 'Only from verified accounts'],
+          ].map(([key, label]) => (
+            <label key={key} className="notification-setting-row">
+              <span>{label}</span>
+              <input type="checkbox" checked={Boolean(settings[key])} onChange={(e) => updateSetting(key, e.target.checked)} />
+            </label>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <Spinner />
       ) : loadError ? (
         <EmptyState title="Couldn’t load notifications" text="Please try again in a moment." />
-      ) : notifications.length === 0 ? (
+      ) : visibleNotifications.length === 0 ? (
         <EmptyState
           title={tab === 'verified' ? 'No verified notifications yet' : tab === 'mentions' ? 'No mentions yet' : 'Nothing to see here — yet'}
           text={tab === 'all' ? 'From likes to Retweets and a whole lot more, this is where all the action about your Tweets and account will happen.' : 'When there is activity in this tab, it will show up here.'}
         />
       ) : (
-        notifications.map((n) => (
+        visibleNotifications.map((n) => (
           <div key={n.id} className={`notification-item ${!n.read ? 'unread' : ''}`}>
             <div className="notification-icon">
               {n.type === 'like' && <Icon name="heartFilled" size={22} style={{ color: '#f4212e' }} />}

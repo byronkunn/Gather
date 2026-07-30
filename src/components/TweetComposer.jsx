@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { createTweet } from '../lib/api'
+import { createTweet, saveDraft } from '../lib/api'
 import Avatar from './Avatar'
 import Icon from './Icons'
 
@@ -11,13 +11,24 @@ export default function TweetComposer({ replyTo = null, onPosted, autoFocus = fa
   const [text, setText] = useState('')
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [replyAudience, setReplyAudience] = useState('everyone')
+  const [sensitive, setSensitive] = useState(false)
+  const [pollEnabled, setPollEnabled] = useState(false)
+  const [pollOptions, setPollOptions] = useState(['', ''])
+  const [pollDays, setPollDays] = useState(1)
+  const [draftMessage, setDraftMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const fileRef = useRef()
   const taRef = useRef()
 
   const remaining = MAX - text.length
-  const canPost = text.trim().length > 0 && remaining >= 0 && !busy
+  const validPollOptions = pollOptions.map((option) => option.trim()).filter(Boolean)
+  const hasValidPoll = !pollEnabled || validPollOptions.length >= 2
+  const hasContent = text.trim().length > 0 || Boolean(file) || pollEnabled
+  const canPost = hasContent && remaining >= 0 && hasValidPoll && !busy
+  const canSaveDraft = hasContent && !busy
 
   const pickFile = (e) => {
     const f = e.target.files?.[0]
@@ -33,17 +44,57 @@ export default function TweetComposer({ replyTo = null, onPosted, autoFocus = fa
     if (fileRef.current) fileRef.current.value = ''
   }
 
+  const buildComposerOptions = () => ({
+    replyAudience,
+    sensitive,
+    poll: pollEnabled ? {
+      options: validPollOptions.slice(0, 4),
+      expiresAt: new Date(Date.now() + pollDays * 86400000).toISOString(),
+      multipleChoice: false,
+    } : null,
+  })
+
+  const resetComposer = () => {
+    setText('')
+    clearFile()
+    setReplyAudience('everyone')
+    setSensitive(false)
+    setPollEnabled(false)
+    setPollOptions(['', ''])
+    setPollDays(1)
+    setDraftMessage('')
+    setShowAdvanced(false)
+  }
+
   const post = async () => {
     if (!canPost) return
     setBusy(true)
     setError(null)
+    setDraftMessage('')
     try {
-      const tweet = await createTweet(user.id, text.trim(), file, replyTo?.id ?? null)
-      setText('')
-      clearFile()
+      const tweet = await createTweet(user.id, text.trim(), file, replyTo?.id ?? null, buildComposerOptions())
+      resetComposer()
       onPosted?.(tweet)
     } catch (err) {
       setError(err.message || 'Something went wrong')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveCurrentDraft = async () => {
+    if (!canSaveDraft) return
+    setBusy(true)
+    setError(null)
+    try {
+      await saveDraft(user.id, text.trim(), file, {
+        ...buildComposerOptions(),
+        replyTo: replyTo?.id ?? null,
+      })
+      resetComposer()
+      setDraftMessage('Draft saved')
+    } catch (err) {
+      setError(err.message || 'Could not save draft')
     } finally {
       setBusy(false)
     }
@@ -77,6 +128,7 @@ export default function TweetComposer({ replyTo = null, onPosted, autoFocus = fa
           maxLength={MAX + 50}
           onChange={(e) => {
             setText(e.target.value)
+            setDraftMessage('')
             autogrow(e.target)
           }}
           onKeyDown={(e) => {
@@ -91,6 +143,58 @@ export default function TweetComposer({ replyTo = null, onPosted, autoFocus = fa
             </button>
           </div>
         )}
+        <div className="composer-secondary-bar">
+          <button className="btn btn-outline btn-inline" onClick={() => setShowAdvanced((open) => !open)}>
+            {showAdvanced ? 'Hide options' : 'More options'}
+          </button>
+          {draftMessage && <div className="composer-success">{draftMessage}</div>}
+        </div>
+        {showAdvanced && (
+          <div className="composer-advanced">
+            <label className="field field-compact">
+              <span>Who can reply</span>
+              <select value={replyAudience} onChange={(e) => setReplyAudience(e.target.value)}>
+                <option value="everyone">Everyone</option>
+                <option value="following">Accounts you follow</option>
+                <option value="mentioned">Only mentioned accounts</option>
+              </select>
+            </label>
+            <label className="composer-check">
+              <input type="checkbox" checked={sensitive} onChange={(e) => setSensitive(e.target.checked)} />
+              <span>Mark media as sensitive</span>
+            </label>
+            <label className="composer-check">
+              <input type="checkbox" checked={pollEnabled} onChange={(e) => setPollEnabled(e.target.checked)} />
+              <span>Add a poll</span>
+            </label>
+            {pollEnabled && (
+              <div className="composer-poll">
+                <input
+                  className="composer-poll-input"
+                  value={pollOptions[0]}
+                  maxLength={25}
+                  placeholder="Choice 1"
+                  onChange={(e) => setPollOptions((current) => [e.target.value, current[1] || ''])}
+                />
+                <input
+                  className="composer-poll-input"
+                  value={pollOptions[1]}
+                  maxLength={25}
+                  placeholder="Choice 2"
+                  onChange={(e) => setPollOptions((current) => [current[0] || '', e.target.value])}
+                />
+                <label className="field field-compact composer-poll-expiry">
+                  <span>Poll length</span>
+                  <select value={pollDays} onChange={(e) => setPollDays(Number(e.target.value))}>
+                    <option value={1}>1 day</option>
+                    <option value={3}>3 days</option>
+                    <option value={7}>7 days</option>
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
         {error && <div className="composer-error">{error}</div>}
         <div className="composer-bar">
           <div className="composer-tools">
@@ -100,6 +204,9 @@ export default function TweetComposer({ replyTo = null, onPosted, autoFocus = fa
             <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickFile} />
           </div>
           <div className="composer-actions">
+            <button className="btn btn-outline btn-inline" disabled={!canSaveDraft} onClick={saveCurrentDraft}>
+              Save draft
+            </button>
             {text.length > 0 && (
               <div className={`char-ring ${warn ? 'warn' : ''} ${remaining < 0 ? 'over' : ''}`}>
                 {warn ? (

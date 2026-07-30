@@ -827,6 +827,94 @@ create policy "users manage muted keywords" on public.muted_keywords for all usi
 create policy "users view own reports" on public.content_reports for select using (auth.uid() = reporter_id);
 create policy "users create own reports" on public.content_reports for insert with check (auth.uid() = reporter_id);
 
+create or replace function public.normalize_tag_name(raw_tag text)
+returns text
+language sql immutable
+as $$
+  select lower(regexp_replace(trim(both '#' from coalesce(raw_tag, '')), '[^a-zA-Z0-9_]+$', '', 'g'));
+$$;
+
+create table public.tags (
+  id uuid primary key default gen_random_uuid(),
+  name text not null check (char_length(name) > 0),
+  normalized_name text unique not null,
+  description text,
+  post_count integer default 0 not null check (post_count >= 0),
+  created_at timestamptz default now() not null
+);
+
+create table public.post_tags (
+  post_id uuid not null references public.tweets (id) on delete cascade,
+  tag_id uuid not null references public.tags (id) on delete cascade,
+  created_at timestamptz default now() not null,
+  primary key (post_id, tag_id)
+);
+
+create table public.user_tag_follows (
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  tag_id uuid not null references public.tags (id) on delete cascade,
+  created_at timestamptz default now() not null,
+  show_in_home boolean default true not null,
+  notify_popular boolean default false not null,
+  notify_breaking boolean default false not null,
+  primary key (user_id, tag_id)
+);
+
+create index post_tags_tag_idx on public.post_tags (tag_id, created_at desc);
+create index user_tag_follows_tag_idx on public.user_tag_follows (tag_id, created_at desc);
+
+create or replace function public.sync_tag_post_count()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    update public.tags set post_count = post_count + 1 where id = new.tag_id;
+    return new;
+  end if;
+
+  if tg_op = 'DELETE' then
+    update public.tags set post_count = greatest(post_count - 1, 0) where id = old.tag_id;
+    return old;
+  end if;
+
+  return null;
+end;
+$$;
+
+create trigger on_post_tag_change
+  after insert or delete on public.post_tags
+  for each row execute function public.sync_tag_post_count();
+
+alter table public.tags enable row level security;
+alter table public.post_tags enable row level security;
+alter table public.user_tag_follows enable row level security;
+
+grant select on public.tags, public.post_tags to anon, authenticated;
+grant insert, update on public.tags to authenticated;
+grant insert, delete on public.post_tags to authenticated;
+grant select, insert, delete, update on public.user_tag_follows to authenticated;
+grant execute on function public.normalize_tag_name(text) to anon, authenticated;
+
+create policy "tags are viewable by everyone" on public.tags for select using (true);
+create policy "authed users create tags" on public.tags for insert with check (auth.role() = 'authenticated');
+create policy "authed users update tags" on public.tags for update using (auth.role() = 'authenticated');
+create policy "post tags visible with posts" on public.post_tags for select using (public.can_view_tweet(post_id, auth.uid()));
+create policy "authors create post tags" on public.post_tags for insert with check (
+  exists (
+    select 1 from public.tweets t where t.id = post_tags.post_id and t.user_id = auth.uid()
+  )
+);
+create policy "authors delete post tags" on public.post_tags for delete using (
+  exists (
+    select 1 from public.tweets t where t.id = post_tags.post_id and t.user_id = auth.uid()
+  )
+);
+create policy "users view own followed tags" on public.user_tag_follows for select using (auth.uid() = user_id);
+create policy "users follow tags as self" on public.user_tag_follows for insert with check (auth.uid() = user_id);
+create policy "users unfollow tags as self" on public.user_tag_follows for delete using (auth.uid() = user_id);
+create policy "users update own tag settings" on public.user_tag_follows for update using (auth.uid() = user_id);
+
 alter publication supabase_realtime add table public.tweets;
 alter publication supabase_realtime add table public.tweet_media;
 alter publication supabase_realtime add table public.tweet_poll_votes;

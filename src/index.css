@@ -567,6 +567,20 @@ button {
   padding: 12px 16px;
 }
 
+.home-heading-wrap {
+  min-width: 0;
+}
+
+.home-subtitle {
+  margin-top: 2px;
+}
+
+.home-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .home-header-top h1 {
   font-size: 20px;
   font-weight: 800;
@@ -677,6 +691,71 @@ button {
   border-top: 1px solid var(--border-color);
 }
 
+.composer-secondary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.composer-advanced {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-secondary);
+}
+
+.field-compact {
+  padding: 10px 12px;
+}
+
+.field-compact select,
+.field-compact input {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  outline: none;
+}
+
+.composer-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.composer-poll {
+  display: grid;
+  gap: 10px;
+}
+
+.composer-poll-input {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.composer-poll-expiry {
+  max-width: 180px;
+}
+
+.composer-success {
+  color: var(--green-color);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.btn-inline {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
 .composer-tools {
   display: flex;
   gap: 4px;
@@ -731,6 +810,10 @@ button {
   font-size: 13px;
   font-weight: 700;
   color: var(--text-secondary);
+}
+
+.tweet-context a {
+  font-weight: 700;
 }
 
 .tweet-body {
@@ -1000,6 +1083,87 @@ button {
   opacity: 0.7;
 }
 
+.tag-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tag-hero-title {
+  font-size: 28px;
+  line-height: 1.1;
+  margin-bottom: 4px;
+}
+
+.tag-description {
+  margin-top: 8px;
+  color: var(--text-secondary);
+}
+
+.tag-related-wrap,
+.profile-tags-card {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.section-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tag-related-list,
+.profile-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tag-chip-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--accent-color);
+  font-weight: 700;
+}
+
+.tag-chip-link:hover {
+  background: var(--accent-light);
+}
+
+.profile-tag-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.profile-tag-row + .profile-tag-row {
+  border-top: 1px solid var(--border-color);
+}
+
+.profile-tag-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-tag-compact {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
 .media-modal {
   background: transparent;
   border: 0;
@@ -1106,6 +1270,42 @@ button {
   color: var(--text-primary);
 }
 
+.profile-pinned-card,
+.profile-safety-card {
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 18px;
+  background: var(--bg-secondary);
+}
+
+.profile-muted-input-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.profile-muted-input-row input {
+  flex: 1;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+}
+
+.muted-word-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.muted-word-chip {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+}
+
 /* Edit Profile Modal */
 .edit-profile {
   padding-top: 48px;
@@ -1203,6 +1403,24 @@ button {
 
 .notification-item.unread {
   background-color: var(--accent-light);
+}
+
+.notification-settings-panel {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.notification-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.notification-setting-row + .notification-setting-row {
+  border-top: 1px solid var(--border-color);
 }
 
 .notification-icon {

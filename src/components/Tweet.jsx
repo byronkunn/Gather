@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useUi } from '../context/UiContext'
-import { setLike, setRetweet, setBookmark, deleteTweet } from '../lib/api'
+import { setLike, setRetweet, setBookmark, deleteTweet, pinTweetOnProfile, clearPinnedTweet, reportTweet, setAccountMute } from '../lib/api'
 import { timeAgo, compact } from '../lib/format'
 import Avatar from './Avatar'
 import Icon from './Icons'
@@ -16,7 +16,7 @@ export function TweetText({ text }) {
       {parts.map((part, i) => {
         if (/^#\w+$/.test(part)) {
           return (
-            <Link key={i} className="link-blue" to={`/explore?q=${encodeURIComponent(part)}`} onClick={(e) => e.stopPropagation()}>
+            <Link key={i} className="link-blue" to={`/tags/${encodeURIComponent(part.slice(1).toLowerCase())}`} onClick={(e) => e.stopPropagation()}>
               {part}
             </Link>
           )
@@ -44,7 +44,7 @@ export function TweetText({ text }) {
 export default function Tweet({ item, onDeleted }) {
   const tweet = item.tweet ?? item
   const retweetedBy = item.retweetedBy
-  const { user } = useAuth()
+  const { user, profile, refreshProfile } = useAuth()
   const { openCompose } = useUi()
   const navigate = useNavigate()
 
@@ -57,6 +57,8 @@ export default function Tweet({ item, onDeleted }) {
   const [imageOpen, setImageOpen] = useState(false)
 
   const author = tweet.author
+  const isOwnTweet = author.id === user?.id
+  const isPinned = profile?.pinned_tweet_id === tweet.id
 
   const toggleLike = async (e) => {
     e.stopPropagation()
@@ -103,6 +105,34 @@ export default function Tweet({ item, onDeleted }) {
     onDeleted?.(tweet.id)
   }
 
+  const togglePinned = async (e) => {
+    e.stopPropagation()
+    setMenuOpen(false)
+    if (isPinned) {
+      await clearPinnedTweet(user.id)
+    } else {
+      await pinTweetOnProfile(user.id, tweet.id)
+    }
+    refreshProfile?.()
+  }
+
+  const muteAuthor = async (e) => {
+    e.stopPropagation()
+    setMenuOpen(false)
+    if (!window.confirm(`Mute @${author.username}? Their posts will be hidden from your feeds.`)) return
+    await setAccountMute(user.id, author.id, true)
+    onDeleted?.(tweet.id)
+  }
+
+  const reportPost = async (e) => {
+    e.stopPropagation()
+    setMenuOpen(false)
+    const reason = window.prompt('Report reason (spam, harassment, sensitive, impersonation)', 'spam')
+    if (!reason) return
+    await reportTweet(user.id, tweet.id, reason.toLowerCase())
+    window.alert('Thanks. Your report was submitted.')
+  }
+
   const reply = (e) => {
     e.stopPropagation()
     openCompose(tweet)
@@ -122,6 +152,14 @@ export default function Tweet({ item, onDeleted }) {
 
   return (
     <article className="tweet" onClick={() => navigate(`/tweet/${tweet.id}`)}>
+      {item.reasonTag && (
+        <div className="tweet-context">
+          <span>Because you follow</span>
+          <Link to={`/tags/${item.reasonTag}`} className="link-blue" onClick={(e) => e.stopPropagation()}>
+            #{item.reasonTag}
+          </Link>
+        </div>
+      )}
       {retweetedBy && (
         <div className="tweet-context">
           <Icon name="retweet" size={16} />
@@ -142,25 +180,33 @@ export default function Tweet({ item, onDeleted }) {
             <span className="tweet-meta" title={new Date(tweet.created_at).toLocaleString()}>
               {timeAgo(tweet.created_at)}
             </span>
-            {author.id === user?.id && (
-              <div className="tweet-menu-wrap">
-                <button
-                  className="icon-btn tweet-more"
-                  aria-label="More"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setMenuOpen((o) => !o)
-                  }}
-                >
-                  <Icon name="dots" size={18} />
-                </button>
-                {menuOpen && (
-                  <div className="dropdown" onClick={(e) => e.stopPropagation()}>
-                    <button className="dropdown-item danger" onClick={remove}>Delete</button>
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="tweet-menu-wrap">
+              <button
+                className="icon-btn tweet-more"
+                aria-label="More"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setMenuOpen((o) => !o)
+                }}
+              >
+                <Icon name="dots" size={18} />
+              </button>
+              {menuOpen && (
+                <div className="dropdown" onClick={(e) => e.stopPropagation()}>
+                  {isOwnTweet ? (
+                    <>
+                      <button className="dropdown-item" onClick={togglePinned}>{isPinned ? 'Unpin from profile' : 'Pin to profile'}</button>
+                      <button className="dropdown-item danger" onClick={remove}>Delete</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="dropdown-item" onClick={muteAuthor}>Mute @{author.username}</button>
+                      <button className="dropdown-item danger" onClick={reportPost}>Report post</button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <div className="tweet-text">
             <TweetText text={tweet.content} />

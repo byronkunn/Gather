@@ -12,11 +12,13 @@ export default function Home() {
   const [tab, setTab] = useState('foryou')
   const [items, setItems] = useState(null)
   const [loadError, setLoadError] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
 
   const load = useCallback(async () => {
     setLoadError(false)
     try {
       setItems(await fetchFeed(user.id, tab))
+      setLastUpdated(new Date())
     } catch {
       setItems([])
       setLoadError(true)
@@ -38,8 +40,17 @@ export default function Home() {
           <div className="mobile-only home-avatar">
             <Avatar profile={profile} size={32} />
           </div>
-          <h1>Home</h1>
-          <Icon name="sparkle" size={20} className="blue home-sparkle" />
+          <div className="home-heading-wrap">
+            <h1>Home</h1>
+            <div className="muted small home-subtitle">
+              {tab === 'following' ? 'People and tags you follow, newest first.' : 'A mix of popular and recent posts for you.'}
+            </div>
+          </div>
+          <div className="home-header-actions">
+            {lastUpdated && <span className="muted small">Updated just now</span>}
+            <button className="btn btn-outline btn-inline" onClick={load}>Refresh</button>
+            <Icon name="sparkle" size={20} className="blue home-sparkle" />
+          </div>
         </div>
         <div className="tabs">
           <button className={`tab ${tab === 'foryou' ? 'active' : ''}`} onClick={() => setTab('foryou')}>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { searchTweets, searchUsers, fetchTrends, fetchWhoToFollow } from '../lib/api'
 import Tweet from '../components/Tweet'
@@ -10,6 +10,7 @@ import { compact } from '../lib/format'
 
 export default function ExplorePage() {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const queryParam = searchParams.get('q') || ''
   const [query, setQuery] = useState(queryParam)
@@ -109,7 +110,7 @@ export default function ExplorePage() {
               <button
                 key={t.tag}
                 className="trend-item"
-                onClick={() => setSearchParams({ q: '#' + t.tag })}
+                onClick={() => navigate(`/tags/${t.tag}`)}
               >
                 <div className="muted small">Trending in Tech</div>
                 <div className="bold" style={{ fontSize: 16 }}>#{t.tag}</div>

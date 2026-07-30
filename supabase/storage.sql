@@ -22,6 +22,10 @@ grant select, insert, update on public.dm_conversation_requests to authenticated
 grant select, insert on public.dm_reports to authenticated;
 grant select, insert, delete on public.dm_blocks to authenticated;
 grant update on public.tweets to authenticated;
+grant select on public.tags, public.post_tags to anon, authenticated;
+grant insert, update on public.tags to authenticated;
+grant insert, delete on public.post_tags to authenticated;
+grant select, insert, delete, update on public.user_tag_follows to authenticated;
 grant select on public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options, public.tweet_poll_votes to anon, authenticated;
 grant insert, update, delete on public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options to authenticated;
 grant insert, delete on public.tweet_poll_votes to authenticated;
@@ -53,6 +57,14 @@ begin
     where n.nspname = 'public' and p.proname = 'can_reply_to_tweet'
   ) then
     grant execute on function public.can_reply_to_tweet(uuid, uuid) to authenticated;
+  end if;
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'normalize_tag_name'
+  ) then
+    grant execute on function public.normalize_tag_name(text) to anon, authenticated;
   end if;
 end $$;
 

@@ -102,6 +102,9 @@ let MOCK_TWEETS = [
 ];
 
 let MOCK_FOLLOWS = new Set(["user-sarah"]);
+let MOCK_TAG_FOLLOWS = new Set(["react"]);
+let MOCK_MUTED_ACCOUNT_IDS = new Set();
+let MOCK_MUTED_WORDS = [];
 let MOCK_NOTIFICATIONS = [
   {
     id: "notif-1",
@@ -152,6 +155,40 @@ let MOCK_MESSAGES = [
   },
 ];
 
+const MAX_HASHTAGS_PER_POST = 10;
+const MAX_HASHTAG_LENGTH = 32;
+const DEFAULT_NOTIFICATION_SETTINGS = {
+  likes: true,
+  reposts: true,
+  follows: true,
+  replies: true,
+  mentions: true,
+  verifiedOnly: false,
+};
+
+function getPreferenceKey(userId, key) {
+  return `gather:${key}:${userId}`;
+}
+
+function readStoredJson(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = window.localStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredJson(key, value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage failures
+  }
+}
+
 const TWEET_FIELDS = `
   id, user_id, content, image_url, reply_to, created_at,
   status, quote_tweet_id, reply_audience, sensitive, thread_root_id, thread_position, language_code, edited_at, deleted_at,
@@ -168,7 +205,8 @@ const TWEET_FIELDS = `
 function shapeTweet(row) {
   if (!row) return null;
   const media = [...(row.media || [])].sort((a, b) => a.position - b.position);
-  const primaryMedia = media.find((item) => item.type === "image") || media[0] || null;
+  const primaryMedia =
+    media.find((item) => item.type === "image") || media[0] || null;
   const poll = row.poll
     ? {
         ...row.poll,
@@ -254,20 +292,42 @@ function normalizeTweetOptions(options = {}) {
     languageCode: options.languageCode || null,
     mediaAttachments: options.mediaAttachments || [],
     hashtags:
-      options.hashtags?.map((tag) => String(tag).replace(/^#/, "").toLowerCase()) ||
-      [],
+      options.hashtags?.map((tag) =>
+        String(tag).replace(/^#/, "").toLowerCase(),
+      ) || [],
     mentions:
-      options.mentions?.map((username) => String(username).replace(/^@/, "")) || [],
+      options.mentions?.map((username) => String(username).replace(/^@/, "")) ||
+      [],
     poll: options.poll || null,
   };
 }
 
+function stripUrls(text) {
+  return text.replace(/https?:\/\/\S+/gi, " ");
+}
+
 function extractHashtags(content) {
-  return [...new Set([...content.matchAll(/#(\w+)/g)].map((match) => match[1].toLowerCase()))];
+  const withoutUrls = stripUrls(content);
+  const matches = [
+    ...withoutUrls.matchAll(
+      /(^|[^\w/])#([A-Za-z0-9_]{1,40})(?=$|[^A-Za-z0-9_])/g,
+    ),
+  ];
+  return [
+    ...new Set(
+      matches.map((match) =>
+        match[2].toLowerCase().slice(0, MAX_HASHTAG_LENGTH),
+      ),
+    ),
+  ]
+    .filter(Boolean)
+    .slice(0, MAX_HASHTAGS_PER_POST);
 }
 
 function extractMentions(content) {
-  return [...new Set([...content.matchAll(/@(\w{1,30})/g)].map((match) => match[1]))];
+  return [
+    ...new Set([...content.matchAll(/@(\w{1,30})/g)].map((match) => match[1])),
+  ];
 }
 
 async function uploadMediaAsset(userId, attachment) {
@@ -305,9 +365,19 @@ async function resolveMentionedProfiles(usernames) {
   return data || [];
 }
 
-async function createTweetRelations(tweetId, userId, content, options, legacyImageUrl) {
-  const hashtags = [...new Set([...options.hashtags, ...extractHashtags(content)])];
-  const mentionUsernames = [...new Set([...options.mentions, ...extractMentions(content)])];
+async function createTweetRelations(
+  tweetId,
+  userId,
+  content,
+  options,
+  legacyImageUrl,
+) {
+  const hashtags = [
+    ...new Set([...options.hashtags, ...extractHashtags(content)]),
+  ];
+  const mentionUsernames = [
+    ...new Set([...options.mentions, ...extractMentions(content)]),
+  ];
 
   let uploadedMedia = options.mediaAttachments;
   if (legacyImageUrl) {
@@ -346,6 +416,14 @@ async function createTweetRelations(tweetId, userId, content, options, legacyIma
         tags: item.tags || [],
       }));
       tweet.hashtags = hashtags;
+      tweet.tag_entities = hashtags.map((tag) => ({
+        id: `tag-${tag}`,
+        name: tag,
+        normalized_name: tag,
+        post_count:
+          MOCK_TWEETS.filter((item) => (item.hashtags || []).includes(tag))
+            .length + 1,
+      }));
       tweet.mentions = mentions.map((item) => item.id);
       if (options.poll) {
         tweet.poll = {
@@ -402,6 +480,26 @@ async function createTweetRelations(tweetId, userId, content, options, legacyIma
   }
 
   if (hashtags.length) {
+    const { data: createdTags, error: tagError } = await supabase
+      .from("tags")
+      .upsert(
+        hashtags.map((tag) => ({
+          name: tag,
+          normalized_name: tag,
+        })),
+        { onConflict: "normalized_name", ignoreDuplicates: false },
+      )
+      .select("id, normalized_name");
+    if (tagError) throw tagError;
+
+    const { error: postTagsError } = await supabase.from("post_tags").insert(
+      (createdTags || []).map((tag) => ({
+        post_id: tweetId,
+        tag_id: tag.id,
+      })),
+    );
+    if (postTagsError) throw postTagsError;
+
     const { error: hashtagError } = await supabase
       .from("tweet_hashtags")
       .insert(hashtags.map((tag) => ({ tweet_id: tweetId, tag })));
@@ -409,13 +507,15 @@ async function createTweetRelations(tweetId, userId, content, options, legacyIma
   }
 
   if (mentions.length) {
-    const { error: mentionError } = await supabase.from("tweet_mentions").insert(
-      mentions.map((profile) => ({
-        tweet_id: tweetId,
-        mentioned_user_id: profile.id,
-        mentioned_by_id: userId,
-      })),
-    );
+    const { error: mentionError } = await supabase
+      .from("tweet_mentions")
+      .insert(
+        mentions.map((profile) => ({
+          tweet_id: tweetId,
+          mentioned_user_id: profile.id,
+          mentioned_by_id: userId,
+        })),
+      );
     if (mentionError) throw mentionError;
   }
 
@@ -427,15 +527,223 @@ async function createTweetRelations(tweetId, userId, content, options, legacyIma
     });
     if (pollError) throw pollError;
 
-    const { error: optionsError } = await supabase.from("tweet_poll_options").insert(
-      options.poll.options.map((label, index) => ({
-        tweet_id: tweetId,
-        label,
-        position: index,
-      })),
-    );
+    const { error: optionsError } = await supabase
+      .from("tweet_poll_options")
+      .insert(
+        options.poll.options.map((label, index) => ({
+          tweet_id: tweetId,
+          label,
+          position: index,
+        })),
+      );
     if (optionsError) throw optionsError;
   }
+}
+
+function withTagEntities(tweet) {
+  if (!tweet) return tweet;
+  return {
+    ...tweet,
+    tag_entities:
+      tweet.tag_entities ||
+      (tweet.hashtags || []).map((tag) => ({
+        id: `tag-${tag}`,
+        name: tag,
+        normalized_name: tag,
+        post_count: 0,
+      })),
+  };
+}
+
+function getMockTagRecords() {
+  const counts = new Map();
+  for (const tweet of MOCK_TWEETS) {
+    for (const tag of tweet.hashtags || extractHashtags(tweet.content || "")) {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].map(([tag, post_count]) => ({
+    id: `tag-${tag}`,
+    name: tag,
+    normalized_name: tag,
+    description: "",
+    post_count,
+    created_at: new Date().toISOString(),
+  }));
+}
+
+function dedupeFeedItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = item.tweet.id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function tweetContainsMutedWord(tweet, mutedWords) {
+  const haystack = `${tweet.content || ""} ${(tweet.hashtags || []).join(" ")}`.toLowerCase();
+  return mutedWords.some((word) => haystack.includes(String(word).toLowerCase()));
+}
+
+function filterTweetsBySafety(tweets, filters) {
+  return tweets.filter((tweet) => {
+    if (!tweet) return false;
+    if (filters.mutedAccountIds.has(tweet.user_id || tweet.author?.id)) return false;
+    if (tweetContainsMutedWord(tweet, filters.mutedWords)) return false;
+    return true;
+  });
+}
+
+function filterFeedItemsBySafety(items, filters) {
+  return items.filter((item) => {
+    const tweet = item.tweet ?? item;
+    if (filters.mutedAccountIds.has(tweet.user_id || tweet.author?.id)) return false;
+    if (tweetContainsMutedWord(tweet, filters.mutedWords)) return false;
+    return true;
+  });
+}
+
+async function fetchSafetyFilters(userId) {
+  if (!userId) {
+    return { mutedAccountIds: new Set(), mutedWords: [] };
+  }
+  if (!isConfigured) {
+    return {
+      mutedAccountIds: new Set([...MOCK_MUTED_ACCOUNT_IDS]),
+      mutedWords: [...MOCK_MUTED_WORDS],
+    };
+  }
+  const [{ data: mutedAccounts }, { data: mutedWords }] = await Promise.all([
+    supabase
+      .from("account_mutes")
+      .select("muted_id")
+      .eq("muter_id", userId),
+    supabase
+      .from("muted_keywords")
+      .select("phrase")
+      .eq("user_id", userId),
+  ]);
+  return {
+    mutedAccountIds: new Set((mutedAccounts || []).map((row) => row.muted_id)),
+    mutedWords: (mutedWords || []).map((row) => row.phrase).filter(Boolean),
+  };
+}
+
+function interleaveTagFeed(primaryItems, tagItems, every = 4) {
+  if (tagItems.length === 0) return primaryItems;
+  const output = [];
+  let tagIndex = 0;
+
+  for (let index = 0; index < primaryItems.length; index += 1) {
+    output.push(primaryItems[index]);
+    if ((index + 1) % every === 0 && tagIndex < tagItems.length) {
+      output.push(tagItems[tagIndex]);
+      tagIndex += 1;
+    }
+  }
+
+  while (
+    tagIndex < tagItems.length &&
+    output.length <
+      primaryItems.length +
+        Math.min(tagItems.length, Math.ceil(primaryItems.length / every))
+  ) {
+    output.push(tagItems[tagIndex]);
+    tagIndex += 1;
+  }
+
+  return output;
+}
+
+async function fetchFollowedTagNames(userId) {
+  if (!isConfigured) return [...MOCK_TAG_FOLLOWS];
+  const { data, error } = await supabase
+    .from("user_tag_follows")
+    .select("tags:tags!user_tag_follows_tag_id_fkey (normalized_name)")
+    .eq("user_id", userId)
+    .eq("show_in_home", true);
+  if (error) throw error;
+  return (data || []).map((row) => row.tags?.normalized_name).filter(Boolean);
+}
+
+async function fetchTagRowsByNames(tagNames) {
+  const unique = [
+    ...new Set(
+      tagNames
+        .filter(Boolean)
+        .map((tag) => String(tag).replace(/^#/, "").toLowerCase()),
+    ),
+  ];
+  if (unique.length === 0) return [];
+  const { data, error } = await supabase
+    .from("tags")
+    .select("id, name, normalized_name, post_count")
+    .in("normalized_name", unique);
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchTagPostsByNames(tagNames, userId, limit = 40) {
+  if (tagNames.length === 0) return [];
+  if (!isConfigured) {
+    return dedupeFeedItems(
+      MOCK_TWEETS.filter((tweet) =>
+        (tweet.hashtags || []).some((tag) => tagNames.includes(tag)),
+      )
+        .filter((tweet) => tweet.status !== "draft" && !tweet.deleted_at)
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+        .slice(0, limit)
+        .map((tweet) => {
+          const reasonTag = (tweet.hashtags || []).find((tag) =>
+            tagNames.includes(tag),
+          );
+          return {
+            sortAt: tweet.created_at,
+            tweet: withTagEntities(tweet),
+            reasonTag,
+          };
+        }),
+    );
+  }
+
+  const tagRows = await fetchTagRowsByNames(tagNames);
+  if (tagRows.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("post_tags")
+    .select(`created_at, tag_id, tweet:tweets (${TWEET_FIELDS})`)
+    .in(
+      "tag_id",
+      tagRows.map((tag) => tag.id),
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit * 3);
+  if (error) throw error;
+
+  const tagNameById = new Map(
+    tagRows.map((tag) => [tag.id, tag.normalized_name]),
+  );
+
+  const shaped = (data || [])
+    .filter((row) => row.tweet)
+    .map((row) => ({
+      sortAt: row.tweet.created_at,
+      tweet: shapeTweet(row.tweet),
+      reasonTag: tagNameById.get(row.tag_id) || null,
+    }))
+    .filter((item) => item.tweet.user_id !== userId);
+
+  const deduped = dedupeFeedItems(shaped).slice(0, limit);
+  const withState = await attachUserState(
+    deduped.map((item) => item.tweet),
+    userId,
+  );
+  return deduped.map((item, index) => ({
+    ...item,
+    tweet: withTagEntities(withState[index]),
+  }));
 }
 
 // ---------- FEED ----------
@@ -445,12 +753,26 @@ export async function fetchFeed(userId, tab) {
       (t) => !t.reply_to && t.status !== "draft" && !t.deleted_at,
     );
     if (tab === "following") {
-      list = list.filter(
+      const followingItems = list.filter(
         (t) => MOCK_FOLLOWS.has(t.user_id) || t.user_id === userId,
       );
+      const tagItems = await fetchTagPostsByNames([...MOCK_TAG_FOLLOWS], userId, 20);
+      const mixed = interleaveTagFeed(
+        followingItems.map((t) => ({
+          sortAt: t.created_at,
+          tweet: withTagEntities(t),
+        })),
+        tagItems.filter(
+          (item) => !followingItems.some((tweet) => tweet.id === item.tweet.id),
+        ),
+      );
+      return filterFeedItemsBySafety(mixed, await fetchSafetyFilters(userId));
     }
-    const items = list.map((t) => ({ sortAt: t.created_at, tweet: t }));
-    return items;
+    const items = list.map((t) => ({
+      sortAt: t.created_at,
+      tweet: withTagEntities(t),
+    }));
+    return filterFeedItemsBySafety(items, await fetchSafetyFilters(userId));
   }
 
   let authorIds = null;
@@ -493,24 +815,30 @@ export async function fetchFeed(userId, tab) {
   const items = [
     ...(tweets || []).map((t) => ({
       sortAt: t.created_at,
-      tweet: shapeTweet(t),
+      tweet: withTagEntities(shapeTweet(t)),
     })),
     ...(rts || [])
       .filter((r) => r.tweet)
       .map((r) => ({
         sortAt: r.created_at,
         retweetedBy: r.retweeter,
-        tweet: shapeTweet(r.tweet),
+        tweet: withTagEntities(shapeTweet(r.tweet)),
       })),
   ].sort((a, b) => new Date(b.sortAt) - new Date(a.sortAt));
 
-  const seen = new Set();
-  const deduped = items.filter((it) => {
-    const k = it.tweet.id + (it.retweetedBy ? ":rt:" + it.retweetedBy.id : "");
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  let deduped = dedupeFeedItems(items);
+
+  if (tab === "following") {
+    const tagNames = await fetchFollowedTagNames(userId);
+    const tagItems = await fetchTagPostsByNames(tagNames, userId, 20);
+    const nonDuplicateTagItems = tagItems.filter(
+      (item) =>
+        !deduped.some((existing) => existing.tweet.id === item.tweet.id),
+    );
+    deduped = interleaveTagFeed(deduped, nonDuplicateTagItems);
+  }
+
+  deduped = filterFeedItemsBySafety(deduped, await fetchSafetyFilters(userId));
 
   const withState = await attachUserState(
     deduped.map((i) => i.tweet),
@@ -533,7 +861,9 @@ export async function fetchTweet(id, userId) {
     .is("deleted_at", null)
     .single();
   if (error) throw error;
-  const [t] = await attachUserState([shapeTweet(data)], userId);
+  const visibleTweets = filterTweetsBySafety([shapeTweet(data)], await fetchSafetyFilters(userId));
+  if (visibleTweets.length === 0) throw new Error("Tweet unavailable");
+  const [t] = await attachUserState(visibleTweets, userId);
   return t;
 }
 
@@ -550,7 +880,7 @@ export async function fetchReplies(tweetId, userId) {
     .is("deleted_at", null)
     .order("created_at", { ascending: true });
   if (error) throw error;
-  return attachUserState((data || []).map(shapeTweet), userId);
+  return attachUserState(filterTweetsBySafety((data || []).map(shapeTweet), await fetchSafetyFilters(userId)), userId);
 }
 
 // ---------- COMPOSE ----------
@@ -591,7 +921,13 @@ export async function createTweet(
       bookmarked: false,
     };
     MOCK_TWEETS.unshift(newTweet);
-    await createTweetRelations(newTweet.id, userId, content, normalized, image_url);
+    await createTweetRelations(
+      newTweet.id,
+      userId,
+      content,
+      normalized,
+      image_url,
+    );
     if (replyTo) {
       const parent = MOCK_TWEETS.find((t) => t.id === replyTo);
       if (parent) parent.reply_count++;
@@ -606,7 +942,9 @@ export async function createTweet(
   }
   if (uploadedAttachments.length) {
     uploadedAttachments = await Promise.all(
-      uploadedAttachments.map((attachment) => uploadMediaAsset(userId, attachment)),
+      uploadedAttachments.map((attachment) =>
+        uploadMediaAsset(userId, attachment),
+      ),
     );
   }
   const { data, error } = await supabase
@@ -683,7 +1021,9 @@ export async function fetchTweetThread(rootId, userId) {
 
 export async function fetchDrafts(userId) {
   if (!isConfigured) {
-    return MOCK_TWEETS.filter((tweet) => tweet.user_id === userId && tweet.status === "draft");
+    return MOCK_TWEETS.filter(
+      (tweet) => tweet.user_id === userId && tweet.status === "draft",
+    );
   }
   const { data, error } = await supabase
     .from("tweets")
@@ -693,6 +1033,14 @@ export async function fetchDrafts(userId) {
     .order("created_at", { ascending: false });
   if (error) throw error;
   return (data || []).map(shapeTweet);
+}
+
+export async function pinTweetOnProfile(userId, tweetId) {
+  return updateProfile(userId, { pinned_tweet_id: tweetId });
+}
+
+export async function clearPinnedTweet(userId) {
+  return updateProfile(userId, { pinned_tweet_id: null });
 }
 
 export function saveDraft(userId, content, imageFile = null, options = {}) {
@@ -830,7 +1178,8 @@ export async function fetchProfileTweets(profileId, tab, userId) {
     );
     if (tab === "replies") list = list.filter((t) => t.reply_to);
     if (tab === "tweets") list = list.filter((t) => !t.reply_to);
-    return list.map((tweet) => ({ tweet }));
+    if (tab === "media") list = list.filter((t) => t.image_url || t.media?.length);
+    return list.map((tweet) => ({ tweet: withTagEntities(tweet) }));
   }
 
   if (tab === "likes") {
@@ -843,9 +1192,9 @@ export async function fetchProfileTweets(profileId, tab, userId) {
     if (error) throw error;
     const tweets = (data || [])
       .filter((r) => r.tweet)
-      .map((r) => shapeTweet(r.tweet));
+      .map((r) => withTagEntities(shapeTweet(r.tweet)));
     const withState = await attachUserState(tweets, userId);
-    return withState.map((tweet) => ({ tweet }));
+    return filterTweetsBySafety(withState, await fetchSafetyFilters(userId)).map((tweet) => ({ tweet }));
   }
 
   let q = supabase
@@ -857,14 +1206,22 @@ export async function fetchProfileTweets(profileId, tab, userId) {
     .order("created_at", { ascending: false })
     .limit(50);
   q =
-    tab === "replies" ? q.not("reply_to", "is", null) : q.is("reply_to", null);
+    tab === "replies"
+      ? q.not("reply_to", "is", null)
+      : tab === "media"
+        ? q
+        : q.is("reply_to", null);
   const { data, error } = await q;
   if (error) throw error;
 
   let items = (data || []).map((t) => ({
     sortAt: t.created_at,
-    tweet: shapeTweet(t),
+    tweet: withTagEntities(shapeTweet(t)),
   }));
+
+  if (tab === "media") {
+    items = items.filter((item) => item.tweet.image_url || item.tweet.media?.length);
+  }
 
   if (tab === "tweets") {
     const { data: rts } = await supabase
@@ -882,7 +1239,7 @@ export async function fetchProfileTweets(profileId, tab, userId) {
         .map((r) => ({
           sortAt: r.created_at,
           retweetedBy: r.retweeter,
-          tweet: shapeTweet(r.tweet),
+          tweet: withTagEntities(shapeTweet(r.tweet)),
         })),
     ].sort((a, b) => new Date(b.sortAt) - new Date(a.sortAt));
   }
@@ -891,7 +1248,10 @@ export async function fetchProfileTweets(profileId, tab, userId) {
     items.map((i) => i.tweet),
     userId,
   );
-  return items.map((item, i) => ({ ...item, tweet: withState[i] }));
+  const filteredTweets = filterTweetsBySafety(withState, await fetchSafetyFilters(userId));
+  return items
+    .map((item, i) => ({ ...item, tweet: withState[i] }))
+    .filter((item) => filteredTweets.some((tweet) => tweet.id === item.tweet.id));
 }
 
 export async function updateProfile(userId, fields) {
@@ -922,32 +1282,40 @@ export async function fetchBookmarks(userId) {
   const tweets = (data || [])
     .filter((r) => r.tweet)
     .map((r) => shapeTweet(r.tweet));
-  return attachUserState(tweets, userId);
+  return attachUserState(filterTweetsBySafety(tweets, await fetchSafetyFilters(userId)), userId);
 }
 
 // ---------- SEARCH & TRENDS ----------
 export async function searchTweets(query, userId) {
   if (!isConfigured) {
     const q = query.toLowerCase();
-    return MOCK_TWEETS.filter(
+    const results = MOCK_TWEETS.filter(
       (t) =>
         t.status !== "draft" &&
         !t.deleted_at &&
         (t.content.toLowerCase().includes(q) ||
           (q.startsWith("#") && (t.hashtags || []).includes(q.slice(1)))),
     );
+    return filterTweetsBySafety(results.map(withTagEntities), await fetchSafetyFilters(userId));
   }
   if (query.startsWith("#")) {
     const tag = query.slice(1).toLowerCase();
+    const tagRows = await fetchTagRowsByNames([tag]);
+    if (tagRows.length === 0) return [];
     const { data, error } = await supabase
-      .from("tweet_hashtags")
+      .from("post_tags")
       .select(`tweet:tweets (${TWEET_FIELDS})`)
-      .eq("tag", tag)
+      .eq("tag_id", tagRows[0].id)
       .order("created_at", { ascending: false })
       .limit(30);
     if (error) throw error;
+    const safety = await fetchSafetyFilters(userId);
     return attachUserState(
-      (data || []).filter((row) => row.tweet).map((row) => shapeTweet(row.tweet)),
+      (data || [])
+        .filter((row) => row.tweet)
+        .map((row) => withTagEntities(shapeTweet(row.tweet)))
+        .filter((tweet) => !safety.mutedAccountIds.has(tweet.user_id || tweet.author?.id))
+        .filter((tweet) => !tweetContainsMutedWord(tweet, safety.mutedWords)),
       userId,
     );
   }
@@ -960,7 +1328,244 @@ export async function searchTweets(query, userId) {
     .order("created_at", { ascending: false })
     .limit(30);
   if (error) throw error;
-  return attachUserState((data || []).map(shapeTweet), userId);
+  return attachUserState(
+    filterTweetsBySafety((data || []).map((row) => withTagEntities(shapeTweet(row))), await fetchSafetyFilters(userId)),
+    userId,
+  );
+}
+
+export async function fetchTag(normalizedName, userId) {
+  const cleaned = normalizedName.replace(/^#/, "").toLowerCase();
+  if (!isConfigured) {
+    const tag = getMockTagRecords().find(
+      (item) => item.normalized_name === cleaned,
+    );
+    if (!tag) throw new Error("Tag not found");
+    return {
+      ...tag,
+      is_following: MOCK_TAG_FOLLOWS.has(cleaned),
+    };
+  }
+  const { data, error } = await supabase
+    .from("tags")
+    .select("*")
+    .eq("normalized_name", cleaned)
+    .single();
+  if (error) throw error;
+  const { data: follow } = await supabase
+    .from("user_tag_follows")
+    .select("user_id")
+    .match({ user_id: userId, tag_id: data.id })
+    .maybeSingle();
+  return {
+    ...data,
+    is_following: Boolean(follow),
+  };
+}
+
+export async function fetchTagPosts(tagName, userId, tab = "latest") {
+  const cleaned = tagName.replace(/^#/, "").toLowerCase();
+  if (!isConfigured) {
+    let tweets = MOCK_TWEETS.filter((tweet) =>
+      (tweet.hashtags || []).includes(cleaned),
+    );
+    if (tab === "media")
+      tweets = tweets.filter((tweet) => tweet.image_url || tweet.media?.length);
+    tweets = [...tweets].sort((a, b) => {
+      if (tab === "top") {
+        const scoreA =
+          (a.like_count || 0) +
+          (a.retweet_count || 0) * 2 +
+          (a.reply_count || 0);
+        const scoreB =
+          (b.like_count || 0) +
+          (b.retweet_count || 0) * 2 +
+          (b.reply_count || 0);
+        return (
+          scoreB - scoreA || new Date(b.created_at) - new Date(a.created_at)
+        );
+      }
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+    return filterTweetsBySafety(tweets.map(withTagEntities), await fetchSafetyFilters(userId)).map((tweet) => ({ tweet }));
+  }
+
+  const tagRows = await fetchTagRowsByNames([cleaned]);
+  if (tagRows.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("post_tags")
+    .select(`tweet:tweets (${TWEET_FIELDS})`)
+    .eq("tag_id", tagRows[0].id)
+    .limit(50);
+  if (error) throw error;
+
+  let tweets = (data || [])
+    .filter((row) => row.tweet)
+    .map((row) => withTagEntities(shapeTweet(row.tweet)));
+  if (tab === "media")
+    tweets = tweets.filter((tweet) => tweet.image_url || tweet.media?.length);
+  tweets = [...tweets].sort((a, b) => {
+    if (tab === "top") {
+      const scoreA =
+        (a.like_count || 0) + (a.retweet_count || 0) * 2 + (a.reply_count || 0);
+      const scoreB =
+        (b.like_count || 0) + (b.retweet_count || 0) * 2 + (b.reply_count || 0);
+      return scoreB - scoreA || new Date(b.created_at) - new Date(a.created_at);
+    }
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+  const withState = await attachUserState(tweets, userId);
+  return filterTweetsBySafety(withState, await fetchSafetyFilters(userId)).map((tweet) => ({ tweet }));
+}
+
+export async function fetchNotificationSettings(userId) {
+  if (!userId) return DEFAULT_NOTIFICATION_SETTINGS;
+  return {
+    ...DEFAULT_NOTIFICATION_SETTINGS,
+    ...readStoredJson(getPreferenceKey(userId, "notification-settings"), DEFAULT_NOTIFICATION_SETTINGS),
+  };
+}
+
+export async function updateNotificationSettings(userId, nextSettings) {
+  const merged = {
+    ...DEFAULT_NOTIFICATION_SETTINGS,
+    ...nextSettings,
+  };
+  writeStoredJson(getPreferenceKey(userId, "notification-settings"), merged);
+  return merged;
+}
+
+export async function fetchRelatedTags(tagName) {
+  const cleaned = tagName.replace(/^#/, "").toLowerCase();
+  if (!isConfigured) {
+    const relatedCounts = new Map();
+    for (const tweet of MOCK_TWEETS.filter((item) =>
+      (item.hashtags || []).includes(cleaned),
+    )) {
+      for (const other of tweet.hashtags || []) {
+        if (other !== cleaned)
+          relatedCounts.set(other, (relatedCounts.get(other) || 0) + 1);
+      }
+    }
+    return [...relatedCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([normalized_name, post_count]) => ({
+        id: `tag-${normalized_name}`,
+        name: normalized_name,
+        normalized_name,
+        post_count,
+      }));
+  }
+
+  const { data: baseTag, error: tagError } = await supabase
+    .from("tags")
+    .select("id")
+    .eq("normalized_name", cleaned)
+    .single();
+  if (tagError) return [];
+
+  const { data: coTags, error } = await supabase
+    .from("post_tags")
+    .select("post_id")
+    .eq("tag_id", baseTag.id);
+  if (error || !coTags?.length) return [];
+
+  const postIds = coTags.map((row) => row.post_id);
+  const { data: relatedRows, error: relatedError } = await supabase
+    .from("post_tags")
+    .select(
+      "tag:tags!post_tags_tag_id_fkey (id, name, normalized_name, post_count)",
+    )
+    .in("post_id", postIds)
+    .limit(200);
+  if (relatedError) return [];
+
+  const counts = new Map();
+  for (const row of relatedRows || []) {
+    const tag = row.tag;
+    if (!tag || tag.normalized_name === cleaned) continue;
+    counts.set(tag.normalized_name, {
+      ...tag,
+      score: (counts.get(tag.normalized_name)?.score || 0) + 1,
+    });
+  }
+  return [...counts.values()].sort((a, b) => b.score - a.score).slice(0, 5);
+}
+
+export async function fetchFollowingTags(userId) {
+  if (!isConfigured) {
+    return getMockTagRecords().filter((tag) =>
+      MOCK_TAG_FOLLOWS.has(tag.normalized_name),
+    );
+  }
+  const { data, error } = await supabase
+    .from("user_tag_follows")
+    .select(
+      "created_at, show_in_home, notify_popular, notify_breaking, tag:tags!user_tag_follows_tag_id_fkey (*)",
+    )
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    ...row.tag,
+    follow_created_at: row.created_at,
+    show_in_home: row.show_in_home,
+  }));
+}
+
+export async function setTagFollow(userId, tag, on) {
+  const normalizedName = String(tag).replace(/^#/, "").toLowerCase();
+  if (!normalizedName) return;
+  if (!isConfigured) {
+    if (on) MOCK_TAG_FOLLOWS.add(normalizedName);
+    else MOCK_TAG_FOLLOWS.delete(normalizedName);
+    return;
+  }
+
+  const { data: tagRow, error: tagError } = await supabase
+    .from("tags")
+    .upsert(
+      { name: normalizedName, normalized_name: normalizedName },
+      { onConflict: "normalized_name" },
+    )
+    .select("id")
+    .single();
+  if (tagError) throw tagError;
+
+  if (on) {
+    const { error } = await supabase
+      .from("user_tag_follows")
+      .upsert(
+        { user_id: userId, tag_id: tagRow.id },
+        { onConflict: "user_id,tag_id" },
+      );
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("user_tag_follows")
+      .delete()
+      .match({ user_id: userId, tag_id: tagRow.id });
+    if (error) throw error;
+  }
+}
+
+export async function isFollowingTag(userId, tag) {
+  const normalizedName = String(tag).replace(/^#/, "").toLowerCase();
+  if (!isConfigured) return MOCK_TAG_FOLLOWS.has(normalizedName);
+  const { data: tagRow } = await supabase
+    .from("tags")
+    .select("id")
+    .eq("normalized_name", normalizedName)
+    .maybeSingle();
+  if (!tagRow) return false;
+  const { data } = await supabase
+    .from("user_tag_follows")
+    .select("user_id")
+    .match({ user_id: userId, tag_id: tagRow.id })
+    .maybeSingle();
+  return Boolean(data);
 }
 
 export async function searchUsers(query) {
@@ -1052,6 +1657,79 @@ export async function fetchNotifications(userId, tab = "all") {
   return data || [];
 }
 
+export async function fetchMutedWords(userId) {
+  if (!userId) return [];
+  if (!isConfigured) return [...MOCK_MUTED_WORDS];
+  const { data, error } = await supabase
+    .from("muted_keywords")
+    .select("id, phrase")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function addMutedWord(userId, phrase) {
+  const cleaned = String(phrase || "").trim().toLowerCase();
+  if (!cleaned) return null;
+  if (!isConfigured) {
+    if (!MOCK_MUTED_WORDS.includes(cleaned)) MOCK_MUTED_WORDS.unshift(cleaned);
+    return { id: cleaned, phrase: cleaned };
+  }
+  const { data, error } = await supabase
+    .from("muted_keywords")
+    .insert({ user_id: userId, phrase: cleaned })
+    .select("id, phrase")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function removeMutedWord(userId, mutedWordIdOrPhrase) {
+  if (!isConfigured) {
+    MOCK_MUTED_WORDS = MOCK_MUTED_WORDS.filter((word) => word !== mutedWordIdOrPhrase);
+    return;
+  }
+  const value = String(mutedWordIdOrPhrase);
+  const { error } = await supabase
+    .from("muted_keywords")
+    .delete()
+    .or(`id.eq.${value},phrase.eq.${value}`)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+export async function setAccountMute(userId, targetId, on) {
+  if (!isConfigured) {
+    if (on) MOCK_MUTED_ACCOUNT_IDS.add(targetId);
+    else MOCK_MUTED_ACCOUNT_IDS.delete(targetId);
+    return;
+  }
+  if (on) {
+    const { error } = await supabase
+      .from("account_mutes")
+      .upsert({ muter_id: userId, muted_id: targetId }, { onConflict: "muter_id,muted_id" });
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("account_mutes")
+      .delete()
+      .match({ muter_id: userId, muted_id: targetId });
+    if (error) throw error;
+  }
+}
+
+export async function reportTweet(userId, tweetId, reason = "spam", details = "") {
+  if (!isConfigured) return { id: `report-${tweetId}` };
+  const { data, error } = await supabase
+    .from("content_reports")
+    .insert({ reporter_id: userId, tweet_id: tweetId, reason, details })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function markNotificationsRead(userId) {
   if (!isConfigured) {
     MOCK_NOTIFICATIONS.forEach((n) => {
@@ -1132,7 +1810,9 @@ export async function fetchConversations(userId) {
     .select("following_id")
     .eq("follower_id", userId);
   if (followsError) throw followsError;
-  const followingSet = new Set((followsData || []).map((row) => row.following_id));
+  const followingSet = new Set(
+    (followsData || []).map((row) => row.following_id),
+  );
 
   const { data, error } = await supabase
     .from("messages")

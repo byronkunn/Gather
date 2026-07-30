@@ -801,4 +801,108 @@ CREATE POLICY "users manage muted keywords" ON public.muted_keywords FOR ALL USI
 CREATE POLICY "users view own reports" ON public.content_reports FOR SELECT USING ((auth.uid() = reporter_id));
 CREATE POLICY "users create own reports" ON public.content_reports FOR INSERT WITH CHECK ((auth.uid() = reporter_id));
 
+CREATE FUNCTION public.normalize_tag_name(raw_tag text)
+ RETURNS text
+ LANGUAGE sql
+ IMMUTABLE
+AS $function$
+  select lower(regexp_replace(trim(both '#' from coalesce(raw_tag, '')), '[^a-zA-Z0-9_]+$', '', 'g'));
+$function$;
+
+CREATE TABLE public.tags (
+  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  name text NOT NULL,
+  normalized_name text NOT NULL,
+  description text,
+  post_count integer DEFAULT 0 NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tags_pkey PRIMARY KEY (id),
+  CONSTRAINT tags_normalized_name_key UNIQUE (normalized_name),
+  CONSTRAINT tags_name_check CHECK ((char_length(name) > 0)),
+  CONSTRAINT tags_post_count_check CHECK ((post_count >= 0))
+);
+ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tags TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tags TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tags TO service_role;
+
+CREATE TABLE public.post_tags (
+  post_id uuid NOT NULL,
+  tag_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT post_tags_pkey PRIMARY KEY (post_id, tag_id),
+  CONSTRAINT post_tags_post_id_fkey FOREIGN KEY (post_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT post_tags_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES public.tags(id) ON DELETE CASCADE
+);
+ALTER TABLE public.post_tags ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.post_tags TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.post_tags TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.post_tags TO service_role;
+CREATE INDEX post_tags_tag_idx ON public.post_tags (tag_id, created_at DESC);
+
+CREATE TABLE public.user_tag_follows (
+  user_id uuid NOT NULL,
+  tag_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  show_in_home boolean DEFAULT true NOT NULL,
+  notify_popular boolean DEFAULT false NOT NULL,
+  notify_breaking boolean DEFAULT false NOT NULL,
+  CONSTRAINT user_tag_follows_pkey PRIMARY KEY (user_id, tag_id),
+  CONSTRAINT user_tag_follows_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE CASCADE,
+  CONSTRAINT user_tag_follows_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES public.tags(id) ON DELETE CASCADE
+);
+ALTER TABLE public.user_tag_follows ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.user_tag_follows TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.user_tag_follows TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.user_tag_follows TO service_role;
+CREATE INDEX user_tag_follows_tag_idx ON public.user_tag_follows (tag_id, created_at DESC);
+
+CREATE FUNCTION public.sync_tag_post_count()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  if tg_op = 'INSERT' then
+    update public.tags set post_count = post_count + 1 where id = new.tag_id;
+    return new;
+  end if;
+
+  if tg_op = 'DELETE' then
+    update public.tags set post_count = greatest(post_count - 1, 0) where id = old.tag_id;
+    return old;
+  end if;
+
+  return null;
+end;
+$function$;
+
+CREATE TRIGGER on_post_tag_change
+AFTER INSERT OR DELETE ON public.post_tags
+FOR EACH ROW EXECUTE FUNCTION public.sync_tag_post_count();
+
+GRANT SELECT ON public.tags, public.post_tags TO anon, authenticated;
+GRANT INSERT, UPDATE ON public.tags TO authenticated;
+GRANT INSERT, DELETE ON public.post_tags TO authenticated;
+GRANT SELECT, INSERT, DELETE, UPDATE ON public.user_tag_follows TO authenticated;
+GRANT EXECUTE ON FUNCTION public.normalize_tag_name(text) TO anon, authenticated;
+
+CREATE POLICY "tags are viewable by everyone" ON public.tags FOR SELECT USING (true);
+CREATE POLICY "authed users create tags" ON public.tags FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "authed users update tags" ON public.tags FOR UPDATE USING (auth.role() = 'authenticated');
+
+CREATE POLICY "post tags visible with posts" ON public.post_tags FOR SELECT USING (public.can_view_tweet(post_id, auth.uid()));
+CREATE POLICY "authors create post tags" ON public.post_tags FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = post_tags.post_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors delete post tags" ON public.post_tags FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = post_tags.post_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "users view own followed tags" ON public.user_tag_follows FOR SELECT USING ((auth.uid() = user_id));
+CREATE POLICY "users follow tags as self" ON public.user_tag_follows FOR INSERT WITH CHECK ((auth.uid() = user_id));
+CREATE POLICY "users unfollow tags as self" ON public.user_tag_follows FOR DELETE USING ((auth.uid() = user_id));
+CREATE POLICY "users update own tag settings" ON public.user_tag_follows FOR UPDATE USING ((auth.uid() = user_id));
+
 ALTER PUBLICATION supabase_realtime ADD TABLE public.tweets, TABLE public.tweet_media, TABLE public.tweet_poll_votes;
