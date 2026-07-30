@@ -9,6 +9,7 @@ create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   username text unique not null,
   display_name text not null,
+  verified boolean default false not null,
   bio text default '',
   location text default '',
   website text default '',

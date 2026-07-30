@@ -17,6 +17,7 @@ const MOCK_PROFILES = {
     created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
     follower_count: 342,
     following_count: 184,
+    verified: false,
   },
   "user-sarah": {
     id: "user-sarah",
@@ -32,6 +33,7 @@ const MOCK_PROFILES = {
     created_at: new Date(Date.now() - 120 * 86400000).toISOString(),
     follower_count: 1250,
     following_count: 420,
+    verified: true,
   },
   "user-sam": {
     id: "user-sam",
@@ -43,6 +45,7 @@ const MOCK_PROFILES = {
     created_at: new Date(Date.now() - 90 * 86400000).toISOString(),
     follower_count: 8900,
     following_count: 310,
+    verified: true,
   },
 };
 
@@ -452,6 +455,7 @@ export async function fetchProfile(username) {
       username,
       display_name: username.charAt(0).toUpperCase() + username.slice(1),
       avatar_url: null,
+      verified: false,
       bio: `Hello! I am @${username} on Gather.`,
       created_at: new Date().toISOString(),
       follower_count: 10,
@@ -658,17 +662,33 @@ export async function fetchWhoToFollow(userId) {
 }
 
 // ---------- NOTIFICATIONS ----------
-export async function fetchNotifications(userId) {
-  if (!isConfigured) return MOCK_NOTIFICATIONS;
-  const { data, error } = await supabase
+export async function fetchNotifications(userId, tab = "all") {
+  if (!isConfigured) {
+    const all = MOCK_NOTIFICATIONS.filter((n) => n.user_id === userId);
+    if (tab === "mentions") return all.filter((n) => n.type === "reply");
+    if (tab === "verified") return all.filter((n) => n.actor?.verified);
+    return all;
+  }
+
+  let query = supabase
     .from("notifications")
     .select(
-      `*, actor:profiles!notifications_actor_id_fkey (id, username, display_name, avatar_url), tweet:tweets (id, content)`,
+      `*, actor:profiles!notifications_actor_id_fkey (id, username, display_name, avatar_url, verified), tweet:tweets (id, content)`,
     )
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(50);
+
+  if (tab === "mentions") {
+    query = query.eq("type", "reply");
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
+
+  if (tab === "verified") {
+    return (data || []).filter((n) => n.actor?.verified);
+  }
   return data || [];
 }
 
@@ -679,11 +699,12 @@ export async function markNotificationsRead(userId) {
     });
     return;
   }
-  await supabase
+  const { error } = await supabase
     .from("notifications")
     .update({ read: true })
     .eq("user_id", userId)
     .eq("read", false);
+  if (error) throw error;
 }
 
 export async function fetchUnreadCounts(userId) {
@@ -716,18 +737,43 @@ export async function fetchUnreadCounts(userId) {
 // ---------- MESSAGES ----------
 export async function fetchConversations(userId) {
   if (!isConfigured) {
+    const followingSet = new Set([...MOCK_FOLLOWS]);
+    const sorted = [...MOCK_MESSAGES].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at),
+    );
     const convos = new Map();
-    for (const msg of MOCK_MESSAGES) {
+    for (const msg of sorted) {
       const other = msg.sender_id === userId ? msg.recipient : msg.sender;
       if (!other) continue;
       if (!convos.has(other.id)) {
-        convos.set(other.id, { other, lastMessage: msg, unread: 0 });
+        convos.set(other.id, {
+          other,
+          lastMessage: msg,
+          unread: 0,
+          hasOutgoing: false,
+          kind: "direct",
+        });
       }
+      if (msg.sender_id === userId) convos.get(other.id).hasOutgoing = true;
       if (msg.recipient_id === userId && !msg.read)
         convos.get(other.id).unread++;
     }
-    return [...convos.values()];
+    return [...convos.values()].map((conversation) => {
+      const isDirect =
+        conversation.hasOutgoing || followingSet.has(conversation.other.id);
+      return {
+        ...conversation,
+        kind: isDirect ? "direct" : "request",
+      };
+    });
   }
+  const { data: followsData, error: followsError } = await supabase
+    .from("follows")
+    .select("following_id")
+    .eq("follower_id", userId);
+  if (followsError) throw followsError;
+  const followingSet = new Set((followsData || []).map((row) => row.following_id));
+
   const { data, error } = await supabase
     .from("messages")
     .select(
@@ -742,11 +788,25 @@ export async function fetchConversations(userId) {
     const other = msg.sender_id === userId ? msg.recipient : msg.sender;
     if (!other) continue;
     if (!convos.has(other.id)) {
-      convos.set(other.id, { other, lastMessage: msg, unread: 0 });
+      convos.set(other.id, {
+        other,
+        lastMessage: msg,
+        unread: 0,
+        hasOutgoing: false,
+        kind: "direct",
+      });
     }
+    if (msg.sender_id === userId) convos.get(other.id).hasOutgoing = true;
     if (msg.recipient_id === userId && !msg.read) convos.get(other.id).unread++;
   }
-  return [...convos.values()];
+  return [...convos.values()].map((conversation) => {
+    const isDirect =
+      conversation.hasOutgoing || followingSet.has(conversation.other.id);
+    return {
+      ...conversation,
+      kind: isDirect ? "direct" : "request",
+    };
+  });
 }
 
 export async function fetchThread(userId, otherId) {

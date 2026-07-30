@@ -6,7 +6,8 @@ import { fetchUnreadCounts, subscribeToMessages, subscribeToNotifications } from
 const UiContext = createContext(null)
 
 export function UiProvider({ children }) {
-  const { user } = useAuth()
+  const auth = useAuth()
+  const user = auth?.user ?? null
   const [composeState, setComposeState] = useState(null) // null | { replyTo: tweet|null }
   const [unread, setUnread] = useState({ notifications: 0, messages: 0 })
 

@@ -14,7 +14,9 @@ import ProfilePage from './pages/ProfilePage'
 import { Spinner } from './components/Shared'
 
 function AppRoutes() {
-  const { user, loading } = useAuth()
+  const auth = useAuth()
+  const user = auth?.user ?? null
+  const loading = auth?.loading ?? true
 
   if (loading) {
     return (

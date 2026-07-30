@@ -77,9 +77,22 @@ export default function MessagesPage() {
 
   const selectPerson = (person) => {
     setActiveUser(person)
-    setConversations(current => current.map(conversation => (
-      conversation.other.id === person.id ? { ...conversation, unread: 0 } : conversation
-    )))
+    setConversations(current => {
+      const exists = current.some(conversation => conversation.other.id === person.id)
+      if (exists) {
+        return current.map(conversation => (
+          conversation.other.id === person.id
+            ? { ...conversation, unread: 0, kind: 'direct' }
+            : conversation
+        ))
+      }
+      return [{
+        other: person,
+        lastMessage: { content: 'New conversation', created_at: new Date().toISOString() },
+        unread: 0,
+        kind: 'direct'
+      }, ...current]
+    })
     setQuery('')
     setPeople([])
     setComposing(false)
@@ -87,6 +100,7 @@ export default function MessagesPage() {
 
   const startMessage = () => {
     setComposing(true)
+    setFilter('all')
     setQuery('')
     window.requestAnimationFrame(() => searchRef.current?.focus())
   }
@@ -94,7 +108,9 @@ export default function MessagesPage() {
   const normalizedQuery = query.trim().toLowerCase()
   const visibleConversations = conversations.filter(conversation => {
     if (filter === 'unread' && !conversation.unread) return false
-    if (filter === 'groups' || filter === 'requests' || filter === 'settings') return false
+    if (filter === 'direct' && conversation.kind !== 'direct') return false
+    if (filter === 'requests' && conversation.kind !== 'request') return false
+    if (filter === 'groups' || filter === 'settings') return false
     if (!normalizedQuery) return true
     return conversation.other.display_name?.toLowerCase().includes(normalizedQuery)
       || conversation.other.username?.toLowerCase().includes(normalizedQuery)
@@ -169,6 +185,18 @@ export default function MessagesPage() {
               </button>
             ))}
           </div>
+        ) : filter === 'settings' ? (
+          <div className="messages-settings-panel">
+            <h3>Message settings</h3>
+            <p className="muted">Control who appears in your requests by following people you trust.</p>
+            <p className="muted">Current behavior:</p>
+            <ul className="messages-settings-list">
+              <li>Conversations from people you follow are shown as Direct.</li>
+              <li>Conversations from people you don’t follow are shown as Requests.</li>
+            </ul>
+          </div>
+        ) : filter === 'groups' ? (
+          <EmptyState title="No group conversations yet" text="Group chats are not enabled yet. Start with a direct message." />
         ) : conversations.length === 0 ? (
           <EmptyState title="Welcome to your inbox!" text="Drop a line, share Tweets and more with private conversations between you and others on Twitter." />
         ) : visibleConversations.length === 0 ? (
@@ -187,8 +215,11 @@ export default function MessagesPage() {
                   <span className="muted small">{timeAgo(c.lastMessage.created_at)}</span>
                 </span>
                 <span className="conversation-preview">
-                  <span className={`small ellipsis ${c.unread ? 'bold' : 'muted'}`}>{c.lastMessage.content}</span>
-                  {c.unread > 0 && <span className="conversation-unread">{c.unread > 9 ? '9+' : c.unread}</span>}
+                  <span className={`small ellipsis ${c.unread ? 'bold' : 'muted'}`}>{c.lastMessage.content || 'No messages yet'}</span>
+                  <span className="conversation-indicators">
+                    {c.kind === 'request' && <span className="conversation-tag">Request</span>}
+                    {c.unread > 0 && <span className="conversation-unread">{c.unread > 9 ? '9+' : c.unread}</span>}
+                  </span>
                 </span>
               </span>
             </button>

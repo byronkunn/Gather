@@ -1178,7 +1178,7 @@ button {
 
 .message-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 94px 36px;
+  grid-template-columns: minmax(0, 1fr) 110px 36px;
   align-items: center;
   gap: 8px;
 }
@@ -1212,7 +1212,7 @@ button {
 }
 
 .message-toolbar select {
-  width: 94px;
+  width: 110px;
   height: 40px;
   padding: 0 8px;
   border: 1px solid var(--border-color-hover);
@@ -1235,6 +1235,21 @@ button {
 
 .people-results {
   min-height: 180px;
+}
+
+.messages-settings-panel {
+  padding: 22px 16px;
+}
+
+.messages-settings-panel h3 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+
+.messages-settings-list {
+  margin-top: 8px;
+  padding-left: 18px;
+  color: var(--text-secondary);
 }
 
 .person-result {
@@ -1292,6 +1307,20 @@ button {
 
 .conversation-preview {
   margin-top: 4px;
+}
+
+.conversation-indicators {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conversation-tag {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-color-hover);
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .conversation-unread {

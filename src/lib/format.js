@@ -38,3 +38,17 @@ export function joinDate(dateStr) {
     'August', 'September', 'October', 'November', 'December']
   return `Joined ${full[d.getMonth()]} ${d.getFullYear()}`
 }
+
+export function normalizeExternalUrl(value) {
+  if (!value) return null
+  const raw = value.trim()
+  if (!raw) return null
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+  try {
+    const parsed = new URL(withProtocol)
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}

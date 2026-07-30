@@ -13,6 +13,20 @@ export default function Sidebar({ compact = false }) {
   const { theme, setTheme, themes } = useTheme()
   const { openCompose, unread } = useUi()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
+  const profilePath = profile?.username ? `/${profile.username}` : '/home'
+
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    try {
+      await signOut()
+      setMenuOpen(false)
+    } catch {
+      alert('Could not sign out right now. Please try again.')
+    } finally {
+      setSigningOut(false)
+    }
+  }
 
   const items = [
     { to: '/home', label: 'Home', icon: 'homeOutline', activeIcon: 'home' },
@@ -20,7 +34,7 @@ export default function Sidebar({ compact = false }) {
     { to: '/notifications', label: 'Notifications', icon: 'bell', activeIcon: 'bellFilled', badge: unread.notifications },
     { to: '/messages', label: 'Messages', icon: 'mail', activeIcon: 'mailFilled', badge: unread.messages },
     { to: '/bookmarks', label: 'Bookmarks', icon: 'bookmark', activeIcon: 'bookmarkFilled' },
-    { to: `/${profile?.username}`, label: 'Profile', icon: 'user', activeIcon: 'userFilled' },
+    { to: profilePath, label: 'Profile', icon: 'user', activeIcon: 'userFilled' },
   ]
 
   return (
@@ -62,8 +76,8 @@ export default function Sidebar({ compact = false }) {
                 </button>
               ))}
               <div className="dropdown-divider" />
-              <button className="dropdown-item" onClick={signOut}>
-                Log out @{profile?.username}
+              <button className="dropdown-item" onClick={handleSignOut} disabled={signingOut}>
+                {signingOut ? 'Logging out…' : `Log out @${profile?.username || 'account'}`}
               </button>
             </div>
           )}

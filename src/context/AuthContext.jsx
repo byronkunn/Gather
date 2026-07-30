@@ -15,23 +15,29 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   const loadProfile = useCallback(async (userId) => {
-    try {
-      if (!isConfigured) {
+    if (!isConfigured) {
+      try {
         const data = await fetchProfile('alex')
         setProfile(data)
-        return
+      } catch {
+        setProfile(null)
       }
+      return
+    }
+
+    try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single()
       if (error) throw error
       setProfile(data)
     } catch {
-      // Fallback profile if Supabase profile not found
+      const fallbackUsername = `user_${String(userId).slice(0, 8)}`
       setProfile({
         id: userId,
-        username: 'alex',
-        display_name: 'Alex Rivera',
+        username: fallbackUsername,
+        display_name: fallbackUsername,
         bio: 'Welcome to Gather!',
       })
+      throw new Error('Failed to load profile')
     }
   }, [])
 
@@ -44,7 +50,11 @@ export function AuthProvider({ children }) {
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (error) throw error
       setSession(session)
-      if (session) loadProfile(session.user.id).finally(() => setLoading(false))
+      if (session) {
+        loadProfile(session.user.id)
+          .catch(() => supabase.auth.signOut())
+          .finally(() => setLoading(false))
+      }
       else setLoading(false)
     }).catch(() => {
       setSession(null)
@@ -54,7 +64,9 @@ export function AuthProvider({ children }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
-      if (session) loadProfile(session.user.id)
+      if (session) {
+        loadProfile(session.user.id).catch(() => supabase.auth.signOut())
+      }
       else setProfile(null)
     })
     return () => subscription?.unsubscribe()
@@ -84,7 +96,6 @@ export function AuthProvider({ children }) {
 
   const signIn = async (email, password) => {
     if (!isConfigured) {
-      const username = email.split('@')[0] || 'alex'
       setSession({ user: { id: 'demo-user-id', email } })
       loadProfile('demo-user-id')
       return

@@ -7,7 +7,7 @@ import Avatar from '../components/Avatar'
 import FollowButton from '../components/FollowButton'
 import EditProfileModal from '../components/EditProfileModal'
 import { PageHeader, Spinner, EmptyState } from '../components/Shared'
-import { joinDate } from '../lib/format'
+import { joinDate, normalizeExternalUrl } from '../lib/format'
 import Icon from '../components/Icons'
 
 export default function ProfilePage() {
@@ -19,6 +19,7 @@ export default function ProfilePage() {
   const [following, setFollowing] = useState(false)
   const [editing, setEditing] = useState(false)
   const [notFound, setNotFound] = useState(false)
+  const websiteUrl = normalizeExternalUrl(profile?.website)
 
   const isOwnProfile = user && (profile?.id === user.id || authProfile?.username === username)
 
@@ -106,15 +107,15 @@ export default function ProfilePage() {
           <div className="profile-meta-row">
             {profile.location && (
               <div className="profile-meta-item">
-                <Icon name="search" size={16} />
+                <Icon name="location" size={16} />
                 <span>{profile.location}</span>
               </div>
             )}
-            {profile.website && (
+            {websiteUrl && (
               <div className="profile-meta-item">
-                <Icon name="share" size={16} />
-                <a href={profile.website} target="_blank" rel="noreferrer" className="link-blue">
-                  {profile.website.replace(/^https?:\/\//, '')}
+                <Icon name="link" size={16} />
+                <a href={websiteUrl} target="_blank" rel="noreferrer" className="link-blue">
+                  {websiteUrl.replace(/^https?:\/\//, '')}
                 </a>
               </div>
             )}

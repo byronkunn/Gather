@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 import { searchTweets, searchUsers, fetchTrends, fetchWhoToFollow } from '../lib/api'
 import Tweet from '../components/Tweet'
 import UserCell from '../components/UserCell'
@@ -8,6 +9,7 @@ import Icon from '../components/Icons'
 import { compact } from '../lib/format'
 
 export default function ExplorePage() {
+  const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const queryParam = searchParams.get('q') || ''
   const [query, setQuery] = useState(queryParam)
@@ -17,16 +19,17 @@ export default function ExplorePage() {
   const [trends, setTrends] = useState([])
   const [suggestions, setSuggestions] = useState([])
   const [loading, setLoading] = useState(false)
+  const viewerId = user?.id || 'demo-user-id'
 
   useEffect(() => {
     setQuery(queryParam)
     if (!queryParam) {
       fetchTrends().then(setTrends).catch(() => {})
-      fetchWhoToFollow('demo-user-id').then(setSuggestions).catch(() => {})
+      fetchWhoToFollow(viewerId).then(setSuggestions).catch(() => {})
     } else {
       setLoading(true)
       Promise.all([
-        searchTweets(queryParam, 'demo-user-id'),
+        searchTweets(queryParam, viewerId),
         searchUsers(queryParam)
       ]).then(([tData, uData]) => {
         setTweets(tData)
@@ -36,7 +39,17 @@ export default function ExplorePage() {
         setUsers([])
       }).finally(() => setLoading(false))
     }
-  }, [queryParam])
+  }, [queryParam, viewerId])
+
+  const displayedTweets = [...tweets].sort((a, b) => {
+    if (tab === 'latest') {
+      return new Date(b.created_at) - new Date(a.created_at)
+    }
+    const scoreA = (a.like_count || 0) + ((a.retweet_count || 0) * 2) + (a.reply_count || 0)
+    const scoreB = (b.like_count || 0) + ((b.retweet_count || 0) * 2) + (b.reply_count || 0)
+    if (scoreA !== scoreB) return scoreB - scoreA
+    return new Date(b.created_at) - new Date(a.created_at)
+  })
 
   const handleSearchSubmit = (e) => {
     e.preventDefault()
@@ -86,7 +99,7 @@ export default function ExplorePage() {
         ) : tweets.length === 0 ? (
           <EmptyState title="No results found" text={`No tweets matching "${queryParam}"`} />
         ) : (
-          tweets.map(t => <Tweet key={t.id} item={t} />)
+          displayedTweets.map(t => <Tweet key={t.id} item={t} />)
         )
       ) : (
         <div style={{ padding: '16px' }}>

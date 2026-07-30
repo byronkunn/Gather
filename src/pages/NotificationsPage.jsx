@@ -19,10 +19,15 @@ export default function NotificationsPage() {
   useEffect(() => {
     if (!user) return
     setLoadError(false)
-    fetchNotifications(user.id)
+    setLoading(true)
+    fetchNotifications(user.id, tab)
       .then(data => setNotifications(data))
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
+  }, [user, tab])
+
+  useEffect(() => {
+    if (!user) return
     markNotificationsRead(user.id)
       .then(() => refreshUnread())
       .catch(() => {})
@@ -48,7 +53,10 @@ export default function NotificationsPage() {
       ) : loadError ? (
         <EmptyState title="Couldn’t load notifications" text="Please try again in a moment." />
       ) : notifications.length === 0 ? (
-        <EmptyState title="Nothing to see here — yet" text="From likes to Retweets and a whole lot more, this is where all the action about your Tweets and account will happen." />
+        <EmptyState
+          title={tab === 'verified' ? 'No verified notifications yet' : tab === 'mentions' ? 'No mentions yet' : 'Nothing to see here — yet'}
+          text={tab === 'all' ? 'From likes to Retweets and a whole lot more, this is where all the action about your Tweets and account will happen.' : 'When there is activity in this tab, it will show up here.'}
+        />
       ) : (
         notifications.map((n) => (
           <div key={n.id} className={`notification-item ${!n.read ? 'unread' : ''}`}>
@@ -66,6 +74,7 @@ export default function NotificationsPage() {
                 <Link to={`/${n.actor?.username}`} className="bold">
                   {n.actor?.display_name || n.actor?.username}
                 </Link>{' '}
+                {n.actor?.verified && <Icon name="verified" size={15} className="blue" style={{ marginRight: 4, verticalAlign: 'text-bottom' }} />}
                 {n.type === 'like' && 'liked your Tweet'}
                 {n.type === 'retweet' && 'retweeted your Tweet'}
                 {n.type === 'follow' && 'followed you'}
