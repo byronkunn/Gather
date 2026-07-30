@@ -200,7 +200,7 @@ export default function Tweet({ item, onDeleted }) {
       </div>
       {imageOpen && (
         <Modal onClose={() => setImageOpen(false)} className="media-modal">
-          <div className="media-modal-body" onClick={(e) => e.stopPropagation()}>
+          <div className="media-modal-body">
             <img src={tweet.image_url} alt="Tweet media" className="media-modal-image" />
           </div>
         </Modal>

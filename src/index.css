@@ -1003,25 +1003,29 @@ button {
 .media-modal {
   background: transparent;
   border: 0;
-  width: min(96vw, 1400px);
-  max-width: min(96vw, 1400px);
+  width: auto;
+  max-width: 96vw;
   max-height: 96vh;
   overflow: visible;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: none;
+  padding: 0;
 }
 
 .media-modal .modal-close {
   top: 20px;
-  left: 20px;
+  right: 20px;
+  left: auto;
+  width: 44px;
+  height: 44px;
   background: rgba(15, 23, 42, 0.68);
   color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .media-modal-body {
-  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
