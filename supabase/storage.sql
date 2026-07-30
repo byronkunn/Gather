@@ -21,6 +21,13 @@ grant select, insert, update on public.dm_message_receipts to authenticated;
 grant select, insert, update on public.dm_conversation_requests to authenticated;
 grant select, insert on public.dm_reports to authenticated;
 grant select, insert, delete on public.dm_blocks to authenticated;
+grant update on public.tweets to authenticated;
+grant select on public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options, public.tweet_poll_votes to anon, authenticated;
+grant insert, update, delete on public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options to authenticated;
+grant insert, delete on public.tweet_poll_votes to authenticated;
+grant select, insert, delete on public.tweet_conversation_mutes, public.hidden_replies, public.removed_mentions, public.account_mutes to authenticated;
+grant select, insert, update, delete on public.muted_keywords to authenticated;
+grant select, insert on public.content_reports to authenticated;
 do $$
 begin
   if exists (
@@ -30,6 +37,22 @@ begin
     where n.nspname = 'public' and p.proname = 'get_trends'
   ) then
     grant execute on function public.get_trends() to anon, authenticated;
+  end if;
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'can_view_tweet'
+  ) then
+    grant execute on function public.can_view_tweet(uuid, uuid) to anon, authenticated;
+  end if;
+  if exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'can_reply_to_tweet'
+  ) then
+    grant execute on function public.can_reply_to_tweet(uuid, uuid) to authenticated;
   end if;
 end $$;
 

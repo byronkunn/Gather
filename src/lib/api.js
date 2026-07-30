@@ -154,7 +154,12 @@ let MOCK_MESSAGES = [
 
 const TWEET_FIELDS = `
   id, user_id, content, image_url, reply_to, created_at,
-  author:profiles!tweets_user_id_fkey (id, username, display_name, avatar_url),
+  status, quote_tweet_id, reply_audience, sensitive, thread_root_id, thread_position, language_code, edited_at, deleted_at,
+  author:profiles!tweets_user_id_fkey (id, username, display_name, avatar_url, verified),
+  media:tweet_media (id, type, url, alt_text, sensitive, position, mime, width, height, duration_ms, meta, tags:tweet_media_tags (tagged_user_id, x, y)),
+  hashtags:tweet_hashtags (tag),
+  mentions:tweet_mentions (mentioned_user_id, removed_at),
+  poll:tweet_polls (expires_at, multiple_choice, ended_at, options:tweet_poll_options (id, label, position, votes:tweet_poll_votes (user_id))),
   like_count:likes(count),
   retweet_count:retweets(count),
   reply_count:tweets!reply_to(count)
@@ -162,8 +167,28 @@ const TWEET_FIELDS = `
 
 function shapeTweet(row) {
   if (!row) return null;
+  const media = [...(row.media || [])].sort((a, b) => a.position - b.position);
+  const primaryMedia = media.find((item) => item.type === "image") || media[0] || null;
+  const poll = row.poll
+    ? {
+        ...row.poll,
+        options: [...(row.poll.options || [])]
+          .sort((a, b) => a.position - b.position)
+          .map((option) => ({
+            ...option,
+            vote_count: option.votes?.length ?? 0,
+          })),
+      }
+    : null;
   return {
     ...row,
+    image_url: row.image_url || primaryMedia?.url || null,
+    media,
+    hashtags: (row.hashtags || []).map((item) => item.tag),
+    mentions: (row.mentions || [])
+      .filter((item) => !item.removed_at)
+      .map((item) => item.mentioned_user_id),
+    poll,
     like_count: row.like_count?.[0]?.count ?? 0,
     retweet_count: row.retweet_count?.[0]?.count ?? 0,
     reply_count: row.reply_count?.[0]?.count ?? 0,
@@ -216,10 +241,209 @@ async function attachUserState(tweets, userId) {
   }
 }
 
+function normalizeTweetOptions(options = {}) {
+  return {
+    status: options.status === "draft" ? "draft" : "published",
+    quoteTweetId: options.quoteTweetId ?? null,
+    replyAudience: options.replyAudience || "everyone",
+    sensitive: Boolean(options.sensitive),
+    threadRootId: options.threadRootId ?? null,
+    threadPosition: Number.isInteger(options.threadPosition)
+      ? options.threadPosition
+      : 0,
+    languageCode: options.languageCode || null,
+    mediaAttachments: options.mediaAttachments || [],
+    hashtags:
+      options.hashtags?.map((tag) => String(tag).replace(/^#/, "").toLowerCase()) ||
+      [],
+    mentions:
+      options.mentions?.map((username) => String(username).replace(/^@/, "")) || [],
+    poll: options.poll || null,
+  };
+}
+
+function extractHashtags(content) {
+  return [...new Set([...content.matchAll(/#(\w+)/g)].map((match) => match[1].toLowerCase()))];
+}
+
+function extractMentions(content) {
+  return [...new Set([...content.matchAll(/@(\w{1,30})/g)].map((match) => match[1]))];
+}
+
+async function uploadMediaAsset(userId, attachment) {
+  if (attachment.url) {
+    return { ...attachment, url: attachment.url };
+  }
+  if (!attachment.file) {
+    throw new Error("Media attachment is missing a file or URL");
+  }
+  const file = attachment.file;
+  const ext = file.name.split(".").pop();
+  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const { error } = await supabase.storage.from("media").upload(path, file);
+  if (error) throw error;
+  return {
+    ...attachment,
+    url: supabase.storage.from("media").getPublicUrl(path).data.publicUrl,
+    mime: attachment.mime || file.type || null,
+  };
+}
+
+async function resolveMentionedProfiles(usernames) {
+  const unique = [...new Set(usernames.filter(Boolean))];
+  if (unique.length === 0) return [];
+  if (!isConfigured) {
+    return Object.values(MOCK_PROFILES)
+      .filter((profile) => unique.includes(profile.username))
+      .map((profile) => ({ id: profile.id, username: profile.username }));
+  }
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, username")
+    .in("username", unique);
+  if (error) throw error;
+  return data || [];
+}
+
+async function createTweetRelations(tweetId, userId, content, options, legacyImageUrl) {
+  const hashtags = [...new Set([...options.hashtags, ...extractHashtags(content)])];
+  const mentionUsernames = [...new Set([...options.mentions, ...extractMentions(content)])];
+
+  let uploadedMedia = options.mediaAttachments;
+  if (legacyImageUrl) {
+    uploadedMedia = [
+      {
+        type: "image",
+        url: legacyImageUrl,
+        altText: null,
+        sensitive: options.sensitive,
+        position: 0,
+        tags: [],
+      },
+      ...uploadedMedia,
+    ];
+  }
+
+  const mentions = await resolveMentionedProfiles(mentionUsernames);
+
+  if (!isConfigured) {
+    const tweet = MOCK_TWEETS.find((item) => item.id === tweetId);
+    if (tweet) {
+      tweet.status = options.status;
+      tweet.quote_tweet_id = options.quoteTweetId;
+      tweet.reply_audience = options.replyAudience;
+      tweet.sensitive = options.sensitive;
+      tweet.thread_root_id = options.threadRootId;
+      tweet.thread_position = options.threadPosition;
+      tweet.language_code = options.languageCode;
+      tweet.media = uploadedMedia.map((item, index) => ({
+        id: `${tweetId}-media-${index}`,
+        type: item.type || "image",
+        url: item.url,
+        alt_text: item.altText || null,
+        sensitive: Boolean(item.sensitive),
+        position: index,
+        tags: item.tags || [],
+      }));
+      tweet.hashtags = hashtags;
+      tweet.mentions = mentions.map((item) => item.id);
+      if (options.poll) {
+        tweet.poll = {
+          expires_at: options.poll.expiresAt,
+          multiple_choice: Boolean(options.poll.multipleChoice),
+          ended_at: null,
+          options: (options.poll.options || []).map((label, index) => ({
+            id: `${tweetId}-poll-${index}`,
+            label,
+            position: index,
+            votes: [],
+            vote_count: 0,
+          })),
+        };
+      }
+    }
+    return;
+  }
+
+  if (uploadedMedia.length) {
+    const mediaRows = uploadedMedia.map((item, index) => ({
+      tweet_id: tweetId,
+      type: item.type || "image",
+      url: item.url,
+      alt_text: item.altText || null,
+      sensitive: item.sensitive ?? options.sensitive,
+      position: item.position ?? index,
+      mime: item.mime || null,
+      width: item.width || null,
+      height: item.height || null,
+      duration_ms: item.durationMs || null,
+      meta: item.meta || {},
+    }));
+    const { data: createdMedia, error: mediaError } = await supabase
+      .from("tweet_media")
+      .insert(mediaRows)
+      .select("id, position");
+    if (mediaError) throw mediaError;
+
+    const mediaTags = (createdMedia || []).flatMap((mediaItem, index) =>
+      (uploadedMedia[index]?.tags || []).map((tag) => ({
+        media_id: mediaItem.id,
+        tagged_user_id: tag.userId,
+        x: tag.x ?? null,
+        y: tag.y ?? null,
+      })),
+    );
+    if (mediaTags.length) {
+      const { error: mediaTagsError } = await supabase
+        .from("tweet_media_tags")
+        .insert(mediaTags);
+      if (mediaTagsError) throw mediaTagsError;
+    }
+  }
+
+  if (hashtags.length) {
+    const { error: hashtagError } = await supabase
+      .from("tweet_hashtags")
+      .insert(hashtags.map((tag) => ({ tweet_id: tweetId, tag })));
+    if (hashtagError) throw hashtagError;
+  }
+
+  if (mentions.length) {
+    const { error: mentionError } = await supabase.from("tweet_mentions").insert(
+      mentions.map((profile) => ({
+        tweet_id: tweetId,
+        mentioned_user_id: profile.id,
+        mentioned_by_id: userId,
+      })),
+    );
+    if (mentionError) throw mentionError;
+  }
+
+  if (options.poll?.options?.length) {
+    const { error: pollError } = await supabase.from("tweet_polls").insert({
+      tweet_id: tweetId,
+      expires_at: options.poll.expiresAt,
+      multiple_choice: Boolean(options.poll.multipleChoice),
+    });
+    if (pollError) throw pollError;
+
+    const { error: optionsError } = await supabase.from("tweet_poll_options").insert(
+      options.poll.options.map((label, index) => ({
+        tweet_id: tweetId,
+        label,
+        position: index,
+      })),
+    );
+    if (optionsError) throw optionsError;
+  }
+}
+
 // ---------- FEED ----------
 export async function fetchFeed(userId, tab) {
   if (!isConfigured) {
-    let list = [...MOCK_TWEETS].filter((t) => !t.reply_to);
+    let list = [...MOCK_TWEETS].filter(
+      (t) => !t.reply_to && t.status !== "draft" && !t.deleted_at,
+    );
     if (tab === "following") {
       list = list.filter(
         (t) => MOCK_FOLLOWS.has(t.user_id) || t.user_id === userId,
@@ -243,6 +467,8 @@ export async function fetchFeed(userId, tab) {
     .from("tweets")
     .select(TWEET_FIELDS)
     .is("reply_to", null)
+    .eq("status", "published")
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50);
   let rtQuery = supabase
@@ -304,6 +530,7 @@ export async function fetchTweet(id, userId) {
     .from("tweets")
     .select(TWEET_FIELDS)
     .eq("id", id)
+    .is("deleted_at", null)
     .single();
   if (error) throw error;
   const [t] = await attachUserState([shapeTweet(data)], userId);
@@ -319,13 +546,22 @@ export async function fetchReplies(tweetId, userId) {
     .from("tweets")
     .select(TWEET_FIELDS)
     .eq("reply_to", tweetId)
+    .eq("status", "published")
+    .is("deleted_at", null)
     .order("created_at", { ascending: true });
   if (error) throw error;
   return attachUserState((data || []).map(shapeTweet), userId);
 }
 
 // ---------- COMPOSE ----------
-export async function createTweet(userId, content, imageFile, replyTo = null) {
+export async function createTweet(
+  userId,
+  content,
+  imageFile,
+  replyTo = null,
+  options = {},
+) {
+  const normalized = normalizeTweetOptions(options);
   if (!isConfigured) {
     const author = MOCK_PROFILES[userId] || MOCK_PROFILES["demo-user-id"];
     let image_url = null;
@@ -338,6 +574,13 @@ export async function createTweet(userId, content, imageFile, replyTo = null) {
       content,
       image_url,
       reply_to: replyTo,
+      status: normalized.status,
+      quote_tweet_id: normalized.quoteTweetId,
+      reply_audience: normalized.replyAudience,
+      sensitive: normalized.sensitive,
+      thread_root_id: normalized.threadRootId,
+      thread_position: normalized.threadPosition,
+      language_code: normalized.languageCode,
       created_at: new Date().toISOString(),
       author,
       like_count: 0,
@@ -348,22 +591,115 @@ export async function createTweet(userId, content, imageFile, replyTo = null) {
       bookmarked: false,
     };
     MOCK_TWEETS.unshift(newTweet);
+    await createTweetRelations(newTweet.id, userId, content, normalized, image_url);
     if (replyTo) {
       const parent = MOCK_TWEETS.find((t) => t.id === replyTo);
       if (parent) parent.reply_count++;
     }
-    return newTweet;
+    return shapeTweet(newTweet);
   }
 
   let image_url = null;
-  if (imageFile) image_url = await uploadImage(userId, imageFile);
+  let uploadedAttachments = normalized.mediaAttachments;
+  if (imageFile) {
+    image_url = await uploadImage(userId, imageFile);
+  }
+  if (uploadedAttachments.length) {
+    uploadedAttachments = await Promise.all(
+      uploadedAttachments.map((attachment) => uploadMediaAsset(userId, attachment)),
+    );
+  }
   const { data, error } = await supabase
     .from("tweets")
-    .insert({ user_id: userId, content, image_url, reply_to: replyTo })
+    .insert({
+      user_id: userId,
+      content,
+      image_url,
+      reply_to: replyTo,
+      status: normalized.status,
+      quote_tweet_id: normalized.quoteTweetId,
+      reply_audience: normalized.replyAudience,
+      sensitive: normalized.sensitive,
+      thread_root_id: normalized.threadRootId,
+      thread_position: normalized.threadPosition,
+      language_code: normalized.languageCode,
+    })
     .select(TWEET_FIELDS)
     .single();
   if (error) throw error;
-  return shapeTweet(data);
+  await createTweetRelations(
+    data.id,
+    userId,
+    content,
+    { ...normalized, mediaAttachments: uploadedAttachments },
+    image_url,
+  );
+  return fetchTweet(data.id, userId);
+}
+
+export async function createThread(userId, posts, options = {}) {
+  if (!posts?.length) return [];
+  const created = [];
+  let rootId = null;
+  let previousId = null;
+
+  for (const [index, post] of posts.entries()) {
+    const tweet = await createTweet(
+      userId,
+      post.content,
+      post.imageFile ?? null,
+      previousId,
+      {
+        ...options,
+        ...post,
+        threadRootId: rootId,
+        threadPosition: index,
+      },
+    );
+    if (!rootId) rootId = tweet.id;
+    previousId = tweet.id;
+    created.push(tweet);
+  }
+
+  return created;
+}
+
+export async function fetchTweetThread(rootId, userId) {
+  if (!isConfigured) {
+    return MOCK_TWEETS.filter(
+      (tweet) => tweet.id === rootId || tweet.thread_root_id === rootId,
+    ).sort((a, b) => (a.thread_position ?? 0) - (b.thread_position ?? 0));
+  }
+  const { data, error } = await supabase
+    .from("tweets")
+    .select(TWEET_FIELDS)
+    .or(`id.eq.${rootId},thread_root_id.eq.${rootId}`)
+    .eq("status", "published")
+    .is("deleted_at", null)
+    .order("thread_position", { ascending: true });
+  if (error) throw error;
+  return attachUserState((data || []).map(shapeTweet), userId);
+}
+
+export async function fetchDrafts(userId) {
+  if (!isConfigured) {
+    return MOCK_TWEETS.filter((tweet) => tweet.user_id === userId && tweet.status === "draft");
+  }
+  const { data, error } = await supabase
+    .from("tweets")
+    .select(TWEET_FIELDS)
+    .eq("user_id", userId)
+    .eq("status", "draft")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(shapeTweet);
+}
+
+export function saveDraft(userId, content, imageFile = null, options = {}) {
+  return createTweet(userId, content, imageFile, options.replyTo ?? null, {
+    ...options,
+    status: "draft",
+  });
 }
 
 export async function deleteTweet(id) {
@@ -516,6 +852,8 @@ export async function fetchProfileTweets(profileId, tab, userId) {
     .from("tweets")
     .select(TWEET_FIELDS)
     .eq("user_id", profileId)
+    .eq("status", "published")
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50);
   q =
@@ -591,11 +929,33 @@ export async function fetchBookmarks(userId) {
 export async function searchTweets(query, userId) {
   if (!isConfigured) {
     const q = query.toLowerCase();
-    return MOCK_TWEETS.filter((t) => t.content.toLowerCase().includes(q));
+    return MOCK_TWEETS.filter(
+      (t) =>
+        t.status !== "draft" &&
+        !t.deleted_at &&
+        (t.content.toLowerCase().includes(q) ||
+          (q.startsWith("#") && (t.hashtags || []).includes(q.slice(1)))),
+    );
+  }
+  if (query.startsWith("#")) {
+    const tag = query.slice(1).toLowerCase();
+    const { data, error } = await supabase
+      .from("tweet_hashtags")
+      .select(`tweet:tweets (${TWEET_FIELDS})`)
+      .eq("tag", tag)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (error) throw error;
+    return attachUserState(
+      (data || []).filter((row) => row.tweet).map((row) => shapeTweet(row.tweet)),
+      userId,
+    );
   }
   const { data, error } = await supabase
     .from("tweets")
     .select(TWEET_FIELDS)
+    .eq("status", "published")
+    .is("deleted_at", null)
     .ilike("content", `%${query}%`)
     .order("created_at", { ascending: false })
     .limit(30);

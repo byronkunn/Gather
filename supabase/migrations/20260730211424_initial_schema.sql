@@ -422,3 +422,383 @@ CREATE POLICY "create own dm block" ON public.dm_blocks FOR INSERT WITH CHECK ((
 CREATE POLICY "remove own dm block" ON public.dm_blocks FOR DELETE USING ((auth.uid() = blocker_id));
 
 ALTER PUBLICATION supabase_realtime ADD TABLE public.dm_messages, TABLE public.dm_conversation_requests;
+
+ALTER TABLE public.notifications DROP CONSTRAINT notifications_type_check;
+ALTER TABLE public.notifications ADD CONSTRAINT notifications_type_check CHECK ((type = ANY (ARRAY['like'::text, 'retweet'::text, 'reply'::text, 'follow'::text, 'mention'::text, 'quote'::text, 'message'::text, 'message_request'::text, 'community'::text, 'announcement'::text])));
+
+CREATE FUNCTION public.can_view_tweet(target_tweet_id uuid, viewer_id uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select exists (
+    select 1
+    from public.tweets t
+    where t.id = target_tweet_id
+      and t.deleted_at is null
+      and (t.status = 'published' or t.user_id = viewer_id)
+  );
+$function$;
+
+CREATE FUNCTION public.can_reply_to_tweet(target_tweet_id uuid, replier_id uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+  select case
+    when target_tweet_id is null then true
+    else exists (
+      select 1
+      from public.tweets t
+      where t.id = target_tweet_id
+        and t.deleted_at is null
+        and (
+          t.reply_audience = 'everyone'
+          or t.user_id = replier_id
+          or (
+            t.reply_audience = 'following'
+            and exists (
+              select 1
+              from public.follows f
+              where f.follower_id = replier_id
+                and f.following_id = t.user_id
+            )
+          )
+          or (
+            t.reply_audience = 'mentioned'
+            and exists (
+              select 1
+              from public.tweet_mentions tm
+              where tm.tweet_id = t.id
+                and tm.mentioned_user_id = replier_id
+                and tm.removed_at is null
+            )
+          )
+        )
+    )
+  end;
+$function$;
+
+ALTER TABLE public.tweets ADD COLUMN status text DEFAULT 'published' NOT NULL;
+ALTER TABLE public.tweets ADD COLUMN quote_tweet_id uuid;
+ALTER TABLE public.tweets ADD COLUMN reply_audience text DEFAULT 'everyone' NOT NULL;
+ALTER TABLE public.tweets ADD COLUMN sensitive boolean DEFAULT false NOT NULL;
+ALTER TABLE public.tweets ADD COLUMN thread_root_id uuid;
+ALTER TABLE public.tweets ADD COLUMN thread_position integer DEFAULT 0 NOT NULL;
+ALTER TABLE public.tweets ADD COLUMN language_code text;
+ALTER TABLE public.tweets ADD COLUMN edited_at timestamp with time zone;
+ALTER TABLE public.tweets ADD COLUMN deleted_at timestamp with time zone;
+ALTER TABLE public.tweets ADD CONSTRAINT tweets_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text])));
+ALTER TABLE public.tweets ADD CONSTRAINT tweets_reply_audience_check CHECK ((reply_audience = ANY (ARRAY['everyone'::text, 'following'::text, 'mentioned'::text])));
+ALTER TABLE public.tweets ADD CONSTRAINT tweets_thread_position_check CHECK ((thread_position >= 0));
+ALTER TABLE public.tweets ADD CONSTRAINT tweets_quote_tweet_id_fkey FOREIGN KEY (quote_tweet_id) REFERENCES public.tweets(id) ON DELETE SET NULL;
+ALTER TABLE public.tweets ADD CONSTRAINT tweets_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.tweets(id) ON DELETE SET NULL;
+CREATE INDEX tweets_status_created_idx ON public.tweets (status, created_at DESC);
+CREATE INDEX tweets_thread_root_idx ON public.tweets (thread_root_id, thread_position);
+CREATE INDEX tweets_quote_idx ON public.tweets (quote_tweet_id);
+GRANT UPDATE ON public.tweets TO authenticated;
+
+DROP POLICY "tweets viewable by everyone" ON public.tweets;
+DROP POLICY "users insert own tweets" ON public.tweets;
+CREATE POLICY "published tweets viewable by everyone" ON public.tweets FOR SELECT USING (((status = 'published'::text) AND (deleted_at IS NULL)));
+CREATE POLICY "users view own tweets" ON public.tweets FOR SELECT USING ((auth.uid() = user_id));
+CREATE POLICY "users insert own tweets" ON public.tweets FOR INSERT WITH CHECK (((auth.uid() = user_id) AND public.can_reply_to_tweet(reply_to, user_id)));
+CREATE POLICY "users update own tweets" ON public.tweets FOR UPDATE USING ((auth.uid() = user_id));
+
+CREATE TABLE public.tweet_media (
+  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  tweet_id uuid NOT NULL,
+  type text NOT NULL,
+  url text NOT NULL,
+  alt_text text,
+  sensitive boolean DEFAULT false NOT NULL,
+  position smallint DEFAULT 0 NOT NULL,
+  mime text,
+  width integer,
+  height integer,
+  duration_ms integer,
+  meta jsonb DEFAULT '{}'::jsonb NOT NULL,
+  CONSTRAINT tweet_media_pkey PRIMARY KEY (id),
+  CONSTRAINT tweet_media_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_media_type_check CHECK ((type = ANY (ARRAY['image'::text, 'video'::text, 'gif'::text, 'link'::text]))),
+  CONSTRAINT tweet_media_position_check CHECK ((position >= 0))
+);
+ALTER TABLE public.tweet_media ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media TO service_role;
+CREATE INDEX tweet_media_tweet_idx ON public.tweet_media (tweet_id, position);
+
+CREATE TABLE public.tweet_media_tags (
+  media_id uuid NOT NULL,
+  tagged_user_id uuid NOT NULL,
+  x numeric(5,2),
+  y numeric(5,2),
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tweet_media_tags_pkey PRIMARY KEY (media_id, tagged_user_id),
+  CONSTRAINT tweet_media_tags_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.tweet_media(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_media_tags_tagged_user_id_fkey FOREIGN KEY (tagged_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_media_tags ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media_tags TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media_tags TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_media_tags TO service_role;
+
+CREATE TABLE public.tweet_hashtags (
+  tweet_id uuid NOT NULL,
+  tag text NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tweet_hashtags_pkey PRIMARY KEY (tweet_id, tag),
+  CONSTRAINT tweet_hashtags_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_hashtags ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_hashtags TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_hashtags TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_hashtags TO service_role;
+CREATE INDEX tweet_hashtags_tag_idx ON public.tweet_hashtags (tag);
+
+CREATE TABLE public.tweet_mentions (
+  tweet_id uuid NOT NULL,
+  mentioned_user_id uuid NOT NULL,
+  mentioned_by_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  removed_at timestamp with time zone,
+  CONSTRAINT tweet_mentions_pkey PRIMARY KEY (tweet_id, mentioned_user_id),
+  CONSTRAINT tweet_mentions_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_mentions_mentioned_user_id_fkey FOREIGN KEY (mentioned_user_id) REFERENCES public.profiles(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_mentions_mentioned_by_id_fkey FOREIGN KEY (mentioned_by_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_mentions ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_mentions TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_mentions TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_mentions TO service_role;
+CREATE INDEX tweet_mentions_user_idx ON public.tweet_mentions (mentioned_user_id, created_at DESC);
+
+CREATE TABLE public.tweet_polls (
+  tweet_id uuid NOT NULL,
+  expires_at timestamp with time zone NOT NULL,
+  multiple_choice boolean DEFAULT false NOT NULL,
+  ended_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tweet_polls_pkey PRIMARY KEY (tweet_id),
+  CONSTRAINT tweet_polls_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_polls ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_polls TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_polls TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_polls TO service_role;
+
+CREATE TABLE public.tweet_poll_options (
+  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  tweet_id uuid NOT NULL,
+  label text NOT NULL,
+  position smallint NOT NULL,
+  CONSTRAINT tweet_poll_options_pkey PRIMARY KEY (id),
+  CONSTRAINT tweet_poll_options_tweet_id_position_key UNIQUE (tweet_id, position),
+  CONSTRAINT tweet_poll_options_label_check CHECK ((char_length(label) <= 25)),
+  CONSTRAINT tweet_poll_options_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweet_polls(tweet_id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_poll_options ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_options TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_options TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_options TO service_role;
+
+CREATE TABLE public.tweet_poll_votes (
+  tweet_id uuid NOT NULL,
+  option_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tweet_poll_votes_pkey PRIMARY KEY (option_id, user_id),
+  CONSTRAINT tweet_poll_votes_tweet_id_user_id_key UNIQUE (tweet_id, user_id),
+  CONSTRAINT tweet_poll_votes_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweet_polls(tweet_id) ON DELETE CASCADE,
+  CONSTRAINT tweet_poll_votes_option_id_fkey FOREIGN KEY (option_id) REFERENCES public.tweet_poll_options(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_poll_votes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_poll_votes ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_votes TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_votes TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_poll_votes TO service_role;
+
+CREATE TABLE public.tweet_conversation_mutes (
+  tweet_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  muted_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT tweet_conversation_mutes_pkey PRIMARY KEY (tweet_id, user_id),
+  CONSTRAINT tweet_conversation_mutes_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT tweet_conversation_mutes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.tweet_conversation_mutes ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_conversation_mutes TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_conversation_mutes TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.tweet_conversation_mutes TO service_role;
+
+CREATE TABLE public.hidden_replies (
+  tweet_id uuid NOT NULL,
+  hidden_reply_id uuid NOT NULL,
+  hidden_by uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT hidden_replies_pkey PRIMARY KEY (tweet_id, hidden_reply_id),
+  CONSTRAINT hidden_replies_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT hidden_replies_hidden_reply_id_fkey FOREIGN KEY (hidden_reply_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT hidden_replies_hidden_by_fkey FOREIGN KEY (hidden_by) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.hidden_replies ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.hidden_replies TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.hidden_replies TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.hidden_replies TO service_role;
+
+CREATE TABLE public.removed_mentions (
+  tweet_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT removed_mentions_pkey PRIMARY KEY (tweet_id, user_id),
+  CONSTRAINT removed_mentions_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT removed_mentions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.removed_mentions ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.removed_mentions TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.removed_mentions TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.removed_mentions TO service_role;
+
+CREATE TABLE public.account_mutes (
+  muter_id uuid NOT NULL,
+  muted_id uuid NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  expires_at timestamp with time zone,
+  CONSTRAINT account_mutes_pkey PRIMARY KEY (muter_id, muted_id),
+  CONSTRAINT account_mutes_check CHECK ((muter_id <> muted_id)),
+  CONSTRAINT account_mutes_muter_id_fkey FOREIGN KEY (muter_id) REFERENCES public.profiles(id) ON DELETE CASCADE,
+  CONSTRAINT account_mutes_muted_id_fkey FOREIGN KEY (muted_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.account_mutes ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.account_mutes TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.account_mutes TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.account_mutes TO service_role;
+
+CREATE TABLE public.muted_keywords (
+  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  user_id uuid NOT NULL,
+  phrase text NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  expires_at timestamp with time zone,
+  CONSTRAINT muted_keywords_pkey PRIMARY KEY (id),
+  CONSTRAINT muted_keywords_phrase_check CHECK ((char_length(phrase) > 0)),
+  CONSTRAINT muted_keywords_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE CASCADE
+);
+ALTER TABLE public.muted_keywords ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.muted_keywords TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.muted_keywords TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.muted_keywords TO service_role;
+
+CREATE TABLE public.content_reports (
+  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  reporter_id uuid NOT NULL,
+  tweet_id uuid,
+  profile_id uuid,
+  message_id uuid,
+  reason text NOT NULL,
+  details text,
+  status text DEFAULT 'open' NOT NULL,
+  created_at timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT content_reports_pkey PRIMARY KEY (id),
+  CONSTRAINT content_reports_status_check CHECK ((status = ANY (ARRAY['open'::text, 'reviewing'::text, 'resolved'::text, 'dismissed'::text]))),
+  CONSTRAINT content_reports_reporter_id_fkey FOREIGN KEY (reporter_id) REFERENCES public.profiles(id) ON DELETE CASCADE,
+  CONSTRAINT content_reports_tweet_id_fkey FOREIGN KEY (tweet_id) REFERENCES public.tweets(id) ON DELETE CASCADE,
+  CONSTRAINT content_reports_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES public.profiles(id) ON DELETE CASCADE,
+  CONSTRAINT content_reports_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.dm_messages(id) ON DELETE CASCADE
+);
+ALTER TABLE public.content_reports ENABLE ROW LEVEL SECURITY;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.content_reports TO anon;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.content_reports TO authenticated;
+GRANT MAINTAIN, REFERENCES, TRIGGER, TRUNCATE ON public.content_reports TO service_role;
+
+GRANT SELECT ON public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options, public.tweet_poll_votes TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.tweet_media, public.tweet_media_tags, public.tweet_hashtags, public.tweet_mentions, public.tweet_polls, public.tweet_poll_options TO authenticated;
+GRANT INSERT, DELETE ON public.tweet_poll_votes TO authenticated;
+GRANT SELECT, INSERT, DELETE ON public.tweet_conversation_mutes, public.hidden_replies, public.removed_mentions, public.account_mutes TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.muted_keywords TO authenticated;
+GRANT SELECT, INSERT ON public.content_reports TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_view_tweet(uuid, uuid) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.can_reply_to_tweet(uuid, uuid) TO authenticated;
+
+CREATE POLICY "tweet media visible with tweet" ON public.tweet_media FOR SELECT USING (public.can_view_tweet(tweet_id, auth.uid()));
+CREATE POLICY "tweet media owned by author" ON public.tweet_media FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_media.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "tweet media author updates" ON public.tweet_media FOR UPDATE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_media.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "tweet media author deletes" ON public.tweet_media FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_media.tweet_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "tweet media tags visible with tweet" ON public.tweet_media_tags FOR SELECT USING (EXISTS ( SELECT 1
+   FROM public.tweet_media tm
+   JOIN public.tweets t ON (t.id = tm.tweet_id)
+  WHERE ((tm.id = tweet_media_tags.media_id) AND public.can_view_tweet(t.id, auth.uid()))));
+CREATE POLICY "tweet media tags owned by author" ON public.tweet_media_tags FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweet_media tm
+   JOIN public.tweets t ON (t.id = tm.tweet_id)
+  WHERE ((tm.id = tweet_media_tags.media_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "tweet media tags author deletes" ON public.tweet_media_tags FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweet_media tm
+   JOIN public.tweets t ON (t.id = tm.tweet_id)
+  WHERE ((tm.id = tweet_media_tags.media_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "hashtags viewable" ON public.tweet_hashtags FOR SELECT USING (true);
+CREATE POLICY "authors manage hashtags" ON public.tweet_hashtags FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_hashtags.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors delete hashtags" ON public.tweet_hashtags FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_hashtags.tweet_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "mentions visible to participant or public viewers" ON public.tweet_mentions FOR SELECT USING (((auth.uid() = mentioned_user_id) OR public.can_view_tweet(tweet_id, auth.uid())));
+CREATE POLICY "authors create mentions" ON public.tweet_mentions FOR INSERT WITH CHECK (((auth.uid() = mentioned_by_id) AND (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_mentions.tweet_id) AND (t.user_id = auth.uid()))))));
+CREATE POLICY "authors update mentions" ON public.tweet_mentions FOR UPDATE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_mentions.tweet_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "polls visible with tweet" ON public.tweet_polls FOR SELECT USING (public.can_view_tweet(tweet_id, auth.uid()));
+CREATE POLICY "authors manage polls" ON public.tweet_polls FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_polls.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors update polls" ON public.tweet_polls FOR UPDATE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_polls.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors delete polls" ON public.tweet_polls FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_polls.tweet_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "poll options visible with tweet" ON public.tweet_poll_options FOR SELECT USING (public.can_view_tweet(tweet_id, auth.uid()));
+CREATE POLICY "authors manage poll options" ON public.tweet_poll_options FOR INSERT WITH CHECK (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_poll_options.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors update poll options" ON public.tweet_poll_options FOR UPDATE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_poll_options.tweet_id) AND (t.user_id = auth.uid()))));
+CREATE POLICY "authors delete poll options" ON public.tweet_poll_options FOR DELETE USING (EXISTS ( SELECT 1
+   FROM public.tweets t
+  WHERE ((t.id = tweet_poll_options.tweet_id) AND (t.user_id = auth.uid()))));
+
+CREATE POLICY "poll votes visible with tweet" ON public.tweet_poll_votes FOR SELECT USING (public.can_view_tweet(tweet_id, auth.uid()));
+CREATE POLICY "users vote as self" ON public.tweet_poll_votes FOR INSERT WITH CHECK ((auth.uid() = user_id));
+CREATE POLICY "users retract own vote" ON public.tweet_poll_votes FOR DELETE USING ((auth.uid() = user_id));
+
+CREATE POLICY "users manage own conversation mutes" ON public.tweet_conversation_mutes FOR ALL USING ((auth.uid() = user_id)) WITH CHECK ((auth.uid() = user_id));
+CREATE POLICY "authors manage hidden replies" ON public.hidden_replies FOR SELECT USING ((auth.uid() = hidden_by));
+CREATE POLICY "authors create hidden replies" ON public.hidden_replies FOR INSERT WITH CHECK ((auth.uid() = hidden_by));
+CREATE POLICY "authors remove hidden replies" ON public.hidden_replies FOR DELETE USING ((auth.uid() = hidden_by));
+CREATE POLICY "users manage removed mentions" ON public.removed_mentions FOR ALL USING ((auth.uid() = user_id)) WITH CHECK ((auth.uid() = user_id));
+CREATE POLICY "users manage account mutes" ON public.account_mutes FOR ALL USING ((auth.uid() = muter_id)) WITH CHECK ((auth.uid() = muter_id));
+CREATE POLICY "users manage muted keywords" ON public.muted_keywords FOR ALL USING ((auth.uid() = user_id)) WITH CHECK ((auth.uid() = user_id));
+CREATE POLICY "users view own reports" ON public.content_reports FOR SELECT USING ((auth.uid() = reporter_id));
+CREATE POLICY "users create own reports" ON public.content_reports FOR INSERT WITH CHECK ((auth.uid() = reporter_id));
+
+ALTER PUBLICATION supabase_realtime ADD TABLE public.tweets, TABLE public.tweet_media, TABLE public.tweet_poll_votes;
