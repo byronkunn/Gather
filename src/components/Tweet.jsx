@@ -6,6 +6,7 @@ import { setLike, setRetweet, setBookmark, deleteTweet } from '../lib/api'
 import { timeAgo, compact } from '../lib/format'
 import Avatar from './Avatar'
 import Icon from './Icons'
+import Modal from './Modal'
 
 // Render tweet text with clickable #hashtags and @mentions
 export function TweetText({ text }) {
@@ -53,6 +54,7 @@ export default function Tweet({ item, onDeleted }) {
   const [rtCount, setRtCount] = useState(tweet.retweet_count)
   const [bookmarked, setBookmarked] = useState(tweet.bookmarked)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [imageOpen, setImageOpen] = useState(false)
 
   const author = tweet.author
 
@@ -164,8 +166,14 @@ export default function Tweet({ item, onDeleted }) {
             <TweetText text={tweet.content} />
           </div>
           {tweet.image_url && (
-            <div className="tweet-image">
-              <img src={tweet.image_url} alt="" loading="lazy" />
+            <div
+              className="tweet-image"
+              onClick={(e) => {
+                e.stopPropagation()
+                setImageOpen(true)
+              }}
+            >
+              <img src={tweet.image_url} alt="Tweet media" loading="lazy" />
             </div>
           )}
           <div className="tweet-actions">
@@ -190,6 +198,13 @@ export default function Tweet({ item, onDeleted }) {
           </div>
         </div>
       </div>
+      {imageOpen && (
+        <Modal onClose={() => setImageOpen(false)} className="media-modal">
+          <div className="media-modal-body" onClick={(e) => e.stopPropagation()}>
+            <img src={tweet.image_url} alt="Tweet media" className="media-modal-image" />
+          </div>
+        </Modal>
+      )}
     </article>
   )
 }

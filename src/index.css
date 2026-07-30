@@ -787,6 +787,7 @@ button {
   overflow: hidden;
   border: 1px solid var(--border-color);
   max-height: 400px;
+  cursor: zoom-in;
 }
 
 .tweet-image img {
@@ -997,6 +998,41 @@ button {
 
 .compose-modal-parent {
   opacity: 0.7;
+}
+
+.media-modal {
+  background: transparent;
+  border: 0;
+  width: min(96vw, 1400px);
+  max-width: min(96vw, 1400px);
+  max-height: 96vh;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+
+.media-modal .modal-close {
+  top: 20px;
+  left: 20px;
+  background: rgba(15, 23, 42, 0.68);
+  color: #fff;
+}
+
+.media-modal-body {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-modal-image {
+  display: block;
+  max-width: 100%;
+  max-height: 96vh;
+  object-fit: contain;
+  border-radius: 18px;
 }
 
 /* Profile Page */
