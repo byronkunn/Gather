@@ -198,7 +198,7 @@ export default function MessagesPage() {
         ) : filter === 'groups' ? (
           <EmptyState title="No group conversations yet" text="Group chats are not enabled yet. Start with a direct message." />
         ) : conversations.length === 0 ? (
-          <EmptyState title="Welcome to your inbox!" text="Drop a line, share Tweets and more with private conversations between you and others on Twitter." />
+          <EmptyState title="Welcome to your inbox!" text="Drop a line, share posts and more with private conversations between you and others on Gather." />
         ) : visibleConversations.length === 0 ? (
           <EmptyState title="No messages here" text="There aren’t any conversations in this view." />
         ) : (

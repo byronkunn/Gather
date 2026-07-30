@@ -67,7 +67,7 @@ export default function ExplorePage() {
           <Icon name="search" size={18} className="search-icon" />
           <input
             type="search"
-            placeholder="Search Twitter"
+            placeholder="Search Gather"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />

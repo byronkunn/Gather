@@ -11,6 +11,16 @@ grant insert, delete on public.tweets, public.likes, public.retweets, public.fol
 grant select, insert, delete on public.bookmarks to authenticated;
 grant select, update on public.notifications to authenticated;
 grant select, insert, update on public.messages to authenticated;
+grant select, insert, update, delete on public.follow_requests to authenticated;
+grant select, insert, update, delete on public.conversations to authenticated;
+grant select, insert, update, delete on public.conversation_members to authenticated;
+grant select, insert, update, delete on public.dm_messages to authenticated;
+grant select, insert, update, delete on public.dm_message_attachments to authenticated;
+grant select, insert, delete on public.dm_message_reactions to authenticated;
+grant select, insert, update on public.dm_message_receipts to authenticated;
+grant select, insert, update on public.dm_conversation_requests to authenticated;
+grant select, insert on public.dm_reports to authenticated;
+grant select, insert, delete on public.dm_blocks to authenticated;
 do $$
 begin
   if exists (

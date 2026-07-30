@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import { useUi } from '../context/UiContext'
 import Avatar from './Avatar'
+import BrandMark from './BrandMark'
 import Icon from './Icons'
 
 const THEME_LABELS = { light: 'Default', dim: 'Dim', dark: 'Lights out' }
@@ -40,8 +41,8 @@ export default function Sidebar({ compact = false }) {
   return (
     <header className={`sidebar ${compact ? 'sidebar-compact' : ''}`}>
       <div className="sidebar-inner">
-        <Link to="/home" className="sidebar-logo" aria-label="Twitter">
-          <Icon name="bird" size={28} />
+        <Link to="/home" className="sidebar-logo" aria-label="Gather">
+          <BrandMark size={30} withWord={!compact} />
         </Link>
         <nav className="sidebar-nav">
           {items.map((item) => (

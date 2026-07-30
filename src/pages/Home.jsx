@@ -59,7 +59,7 @@ export default function Home() {
         <EmptyState title="Couldn’t load your timeline" text="Please try again in a moment." />
       ) : items.length === 0 ? (
         <EmptyState
-          title="Welcome to Twitter!"
+          title="Welcome to Gather!"
           text={tab === 'following' ? 'Follow some people to see their Tweets here.' : 'This is the best place to see what’s happening. Post the first Tweet!'}
         />
       ) : (

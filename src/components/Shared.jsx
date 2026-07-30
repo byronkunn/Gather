@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import Icon from './Icons'
+import BrandMark from './BrandMark'
 
 export function Spinner() {
   return (
@@ -41,7 +42,7 @@ export function EmptyState({ title, text }) {
 export function SetupScreen() {
   return (
     <div className="setup-screen">
-      <Icon name="bird" size={48} className="blue" />
+      <BrandMark size={48} />
       <h1>Almost there</h1>
       <p>
         Supabase isn't configured yet. Copy <code>.env.example</code> to <code>.env</code>,

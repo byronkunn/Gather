@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import Icon from '../components/Icons'
+import BrandMark from '../components/BrandMark'
 
 export default function AuthPage() {
   const { signIn, signUp } = useAuth()
@@ -45,12 +45,12 @@ export default function AuthPage() {
   return (
     <div className="auth-page">
       <div className="auth-hero">
-        <Icon name="bird" size={280} className="auth-hero-bird" />
+        <BrandMark size={280} />
       </div>
       <div className="auth-panel">
-        <Icon name="bird" size={44} className="blue" />
+        <BrandMark size={44} />
         <h1>Happening now</h1>
-        <h2>{mode === 'signup' ? 'Join Twitter today' : 'Sign in to Twitter'}</h2>
+        <h2>{mode === 'signup' ? 'Join Gather today' : 'Sign in to Gather'}</h2>
         <form onSubmit={submit} className="auth-form">
           {mode === 'signup' && (
             <>

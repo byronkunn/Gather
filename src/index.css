@@ -274,11 +274,27 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   width: 50px;
   height: 50px;
   border-radius: 50%;
   color: var(--accent-color);
   margin-bottom: 8px;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #0f1724;
+}
+
+.brand-word {
+  display: none;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
 }
 
 .sidebar-logo:hover {
@@ -338,6 +354,26 @@ button {
   .nav-item {
     width: 100%;
     padding: 12px 20px 12px 12px;
+  }
+
+  .sidebar-logo {
+    width: auto;
+    border-radius: 9999px;
+    padding: 6px 10px;
+  }
+
+  .brand-word {
+    display: inline;
+  }
+
+  .sidebar-compact .sidebar-logo {
+    width: 50px;
+    padding: 0;
+    border-radius: 50%;
+  }
+
+  .sidebar-compact .brand-word {
+    display: none;
   }
 }
 

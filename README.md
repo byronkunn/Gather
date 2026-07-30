@@ -1,6 +1,6 @@
 # Gather
 
-A Twitter-style React app backed by local Supabase.
+A Gather social app backed by local Supabase.
 
 ## Local development
 

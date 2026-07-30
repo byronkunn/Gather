@@ -27,7 +27,7 @@ const MOCK_PROFILES = {
       "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80",
     cover_url:
       "https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=1200&auto=format&fit=crop&q=80",
-    bio: "Frontend Engineer @ Twitter | React, Vite, CSS magician 🎨✨",
+    bio: "Frontend Engineer @ Gather | React, Vite, CSS magician 🎨✨",
     location: "Seattle, WA",
     website: "https://sarahchen.dev",
     created_at: new Date(Date.now() - 120 * 86400000).toISOString(),

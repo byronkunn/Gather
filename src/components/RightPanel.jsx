@@ -33,7 +33,7 @@ export default function RightPanel() {
           <Icon name="search" size={18} className="search-icon" />
           <input
             type="search"
-            placeholder="Search Twitter"
+            placeholder="Search Gather"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -64,7 +64,7 @@ export default function RightPanel() {
         </section>
       )}
       <footer className="panel-footer muted small">
-        Twitter clone · Built with React + Supabase
+        Gather · Built with React + Supabase
       </footer>
     </aside>
   )
